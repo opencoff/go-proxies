@@ -1,0 +1,5 @@
+#! /bin/sh
+
+# 1. Remove system startup links
+update-rc.d  -f gosocksd remove
+exit 0

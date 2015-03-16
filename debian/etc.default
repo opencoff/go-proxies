@@ -1,0 +1,5 @@
+#
+# Default file for gosocksd
+#
+# Set this to 1 to run the gosocksd daemon
+ENABLED=0

@@ -1,0 +1,50 @@
+
+- rate limit per listener (conn/s) e.g., 25/s
+- burst (excess over a short period - e.g., 10 within 0.3s)
+- burst expressed in terms of small time units. Should we fix the
+  units to per 100ms?
+
+Algo
+====
+- tick every conn/s
+- another tick every burst_granularity
+- caller submits new conn into a rl
+- caller waits on a chan to hear back from rl
+- retval: conn to process
+- RL runs in its own goroutine
+
+Anti Huimaa's Clever Algo
+--------------------------
+
+    rate = 5.0; // unit: messages
+    per  = 8.0; // unit: seconds
+    allowance = rate; // unit: messages
+    last_check = now(); // floating-point, e.g. usec accuracy. Unit: seconds
+
+    when (message_received):
+      current = now();
+      time_passed = current - last_check;
+      last_check = current;
+      allowance += time_passed * (rate / per);
+      if (allowance > rate):
+        allowance = rate; // throttle
+      if (allowance < 1.0):
+        discard_message();
+      else:
+        forward_message();
+        allowance -= 1.0;
+
+
+Sim
+---
+- RL: 100 conn/s burst of 25 in 100ms
+- tick every 10ms (how did we get to 10ms?)
+- at end of tick, pull out a conn from the queue and dispatch
+
+Design FAQ
+==========
+- max conn per source IP?
+  No. Clients can be behind a large corp. NAT e.g., sbux.
+
+- do ACL before rate limiting or after?
+  Before RL. easy to block unwanted riff raff

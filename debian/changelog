@@ -1,0 +1,6 @@
+gosocksd (%(version)s) stable; urgency=low
+
+  * This is version %(version)s of gosocksd socks server.
+
+ -- Sudhi Herle <sudhi.herle@gmail.com>  %(date)s
+
