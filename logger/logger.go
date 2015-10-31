@@ -69,6 +69,7 @@ const (
     Lmicroseconds                 // microsecond resolution: 01:23:23.123123.  assumes Ltime.
     Llongfile                     // full file name and line number: /a/b/c/d.go:23
     Lshortfile                    // final file name element and line number: d.go:23. overrides Llongfile
+    Lsyslog                       // set to indicate that output destination is syslog
     LstdFlags     = Ldate | Ltime // initial values for the standard logger
 )
 
@@ -192,7 +193,7 @@ func NewSyslog(prio Priority, prefix string, flag int) (*Logger, error) {
         return nil, errors.New(s)
     }
 
-    return newLogger(&Logger{out: wr, prio: prio, prefix: prefix, flag: flag})
+    return newLogger(&Logger{out: wr, prio: prio, prefix: prefix, flag: flag|Lsyslog})
 }
 
 // Create a new file logger or syslog logger
@@ -268,13 +269,13 @@ func (l *Logger) Output(calldepth int, prio Priority, s string) error {
         return nil
     }
 
-    now := time.Now() // get this early.
-
-    var b string = l.formatHeader(now)
     var buf string
 
-    buf  = fmt.Sprintf("<%d>:", prio)
-    buf += b
+    // Put the timestamp and priority only if we are NOT syslog
+    if (l.flag & Lsyslog) == 0 {
+        now := time.Now()
+        buf  = fmt.Sprintf("<%d>:%s", prio, l.formatHeader(now))
+    }
 
     if calldepth > 0 {
         var file string

@@ -1,0 +1,28 @@
+#! /bin/sh
+
+# Build linux debian package
+
+
+# Bump this for every new release
+VER=0.5.4
+
+
+die() {
+    echo "$0: $@" 1>&2
+    exit 1
+}
+
+#set -x
+
+mk=`which mk-deb.py`
+if [ "x$mk" = "x" ]; then
+    die "Can't find mk-deb.py"
+fi
+
+GOOS=linux
+GOARCH=amd64
+export GOOS GOARCH
+
+pwd=`pwd`
+go build -o socksd socksd.go
+$mk $GOARCH $pwd/debian $VER $pwd

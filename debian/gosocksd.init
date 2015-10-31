@@ -52,7 +52,7 @@ case "$1" in
   stop)
     echo -n "Stopping $DESC: $NAME"
     start-stop-daemon --stop --quiet \
-        --chuid $UID:$GID --background \
+        --chuid $UID:$GID \
         --oknodo --exec $DAEMON -- $OPTIONS
     echo "."
     ;;

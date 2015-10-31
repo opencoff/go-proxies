@@ -37,8 +37,9 @@ import "./ratelimit"
 var debug = flag.Bool("debug", false, "Run in debug mode")
 
 
-var Ngo_started int64
-var Ngo_ended   int64
+var Ngo         int64
+var N_lhs       int64
+var N_rhs       int64
 
 
 type Methods struct {
@@ -56,6 +57,7 @@ type urllog struct {
     n  int
     logch chan string
 }
+
 
 func NewURLLogger(fn string) (ul *urllog, err error) {
 
@@ -90,11 +92,6 @@ func (l *urllog) LogURL(ls, rs, url string, l2r, r2l int64) {
 
     s := fmt.Sprintf("%s %04d-%02d-%02d %02d:%02d:%02d.%06d %s [%s] %d %d",
                         ls, yy, mm, dd, hh, m, ss, us, url, rs, l2r, r2l)
-
-    /*
-    running := Ngo_started - Ngo_ended
-    fmt.Printf("%s [R %d; S %d E %d]\n", s, running, Ngo_started, Ngo_ended)
-    */
 
     s += "\n"
 
@@ -183,6 +180,7 @@ func (px *socksProxy) start() {
         conn, err := ln.Accept()
         if err != nil {
             log.Err("Failed to accept new connection on %s: %s", ln.Addr().String(), err)
+            log.Err("   %d active goroutines, %d LHS %d RHS", Ngo, N_lhs, N_rhs)
             nerr += 1
             if nerr > 5 {
                 log.Err("Too many consecutive accept failures! Aborting...")
@@ -225,15 +223,21 @@ type retval struct {
 
 // goroutine to handle a proxy request from 'lhs'
 func (px *socksProxy) Proxy(lhs net.Conn) {
-
-    atomic.AddInt64(&Ngo_started, 1)
+    atomic.AddInt64(&N_lhs, 1);
+    atomic.AddInt64(&Ngo, 1)
     defer func() {
-        atomic.AddInt64(&Ngo_ended, 1)
+        atomic.AddInt64(&Ngo, -11)
     }()
     defer func() {
+        atomic.AddInt64(&N_lhs, -1);
+        //ss := lhs.RemoteAddr().String()
+        //px.log.Info("Closing LHS connecction from %s; %d gor, %d/%d open", ss, Ngo, N_lhs, N_rhs)
         lhs.Close()
     }()
 
+
+    // We expect to get some bytes within 10 seconds.
+    lhs.SetReadDeadline(deadLine(10000))
 
     _, err := px.readMethods(lhs)
 
@@ -254,8 +258,12 @@ func (px *socksProxy) Proxy(lhs net.Conn) {
     if err != nil {
         return
     }
+    atomic.AddInt64(&N_rhs, 1);
 
     defer func() {
+        atomic.AddInt64(&N_rhs, -1)
+        //ss := rhs.RemoteAddr().String()
+        //px.log.Info("Closing RHS connecction from %s; %d gor, %d/%d open", ss, Ngo, N_lhs, N_rhs)
         rhs.Close()
     }()
 
@@ -316,15 +324,23 @@ func normalize_err(e error) error {
     return e
 }
 
+// Calculate deadLine relative to current time for 'n' milliseconds
+func deadLine(nms int) time.Time {
+    to := time.Duration(nms) * time.Millisecond
+    dl := time.Now().Add(to)
+    return dl
+}
+
 
 // Read from 'r' and write to 'w'
 // Return number of bytes written
-func netcopy(w io.Writer, r io.Reader) (n int64, err error) {
+func netcopy(w net.Conn, r net.Conn) (n int64, err error) {
 
     buf := make([]byte, 16 * 1024)
     n    = 0
 
     for {
+        r.SetReadDeadline(deadLine(25000))
         nr, er := r.Read(buf)
         if nr == 0 {
             break
@@ -344,6 +360,8 @@ func netcopy(w io.Writer, r io.Reader) (n int64, err error) {
         }
 
         if er == io.EOF {
+            t := r.(*net.TCPConn)
+            t.CloseRead()
             break
         } else if er != nil {
             er = normalize_err(er)
@@ -357,10 +375,10 @@ func netcopy(w io.Writer, r io.Reader) (n int64, err error) {
 
 // go routine to read from 'r' and write to 'w'.
 // The return values are sent back in the channel 'retval'
-func serv(w io.Writer, r io.Reader, rv chan<- retval) {
-    atomic.AddInt64(&Ngo_started, 1)
+func serv(w net.Conn, r net.Conn, rv chan<- retval) {
+    atomic.AddInt64(&Ngo, 1)
     defer func() {
-        atomic.AddInt64(&Ngo_ended, 1)
+        atomic.AddInt64(&Ngo, -1)
     }()
 
     n, err := netcopy(w, r)
@@ -566,6 +584,9 @@ type configEntry struct {
     // Timeout in seconds for outbound connect requests
     Conn_tout  int      `json:"connect_timeout"`
 
+    // Timeout in seconds for IO activity
+    IO_tout    int      `json:"io_timeout"`
+
     Allow   []subnet      `json:"allow"`
     Deny    []subnet      `json:"deny"`
 }
@@ -734,27 +755,19 @@ func main() {
 
     // Setup signal handlers
     sigchan := make(chan os.Signal, 4)
-    signal.Notify(sigchan)
+    signal.Notify(sigchan,
+                    syscall.SIGTERM, syscall.SIGKILL,
+                    syscall.SIGINT, syscall.SIGHUP)
 
+    signal.Ignore(syscall.SIGPIPE, syscall.SIGFPE)
 
-    // map indicating action to be taken on each signal
-    // For now, we exit for _any_ signal 
-    sigmap := map[syscall.Signal]bool{
-        syscall.SIGTERM: true,
-        syscall.SIGKILL: true,
-        syscall.SIGINT:  true,
-        syscall.SIGHUP:  true,
-    }
 
     // Now wait for signals to arrive
     for {
         s := <-sigchan
         t := s.(syscall.Signal)
-        log.Info("Caught signal %d (%s)\n", int(t), string(t))
-        if _, ok := sigmap[t]; ok {
-            log.Info("Terminating program ...\n")
-            os.Exit(0)
-        }
+        log.Info("Caught signal %d; Terminating ..\n", int(t))
+        os.Exit(0)
     }
 
 

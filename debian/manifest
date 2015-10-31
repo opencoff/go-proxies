@@ -4,9 +4,10 @@
 #
 
 # Install the package in this dir first
-!go build -o %(debdir)s/usr/bin/gosocksd socksd.go
+#!go build -o %(debdir)s/usr/bin/gosocksd socksd.go
+cp %(templatedir)s/../socksd %(debdir)s/usr/bin/gosocksd
 
-cp %(templatedir)s/socksd.conf   /etc/gosocksd/socksd.conf
+cp %(templatedir)s/socksd.conf   /etc/gosocksd/socksd.conf.pkg
 
 cp %(templatedir)s/etc.default   /etc/default/gosocksd
 cp %(templatedir)s/socksd.conf   /usr/share/doc/gosocksd/socksd.conf
