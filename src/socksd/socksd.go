@@ -29,10 +29,11 @@ import (
     "sync/atomic"
     "os/signal"
     "runtime"
+
+    L "lib/logger"
+    "lib/ratelimit"
 )
 
-import L "./logger"
-import "./ratelimit"
 
 var debug = flag.Bool("debug", false, "Run in debug mode")
 

@@ -22,3 +22,10 @@ _testmain.go
 *.exe
 *.test
 *.prof
+.*sw?
+gosocksd
+
+# gg vendor management
+vendor/src/*
+vendor/pkg/*
+bin/*
