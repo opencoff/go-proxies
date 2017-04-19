@@ -3,8 +3,14 @@ package main
 
 import (
     "io"
+    "os"
+    "fmt"
+    "net"
     "time"
     "context"
+    "syscall"
+    "strings"
+    "net/url"
     "net/http"
 )
 
@@ -77,12 +83,12 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     // XXX Error counts written somewhere?
 
     if r.Method == "CONNECT" {
-        // XXX We don't do this
-        http.Error(w, "No support for CONNECT", 500)
+        p.handleConnect(w, r)
         return
     }
 
     if !r.URL.IsAbs() {
+        p.log.Debug("%s: non-proxy req for %q", r.Host, r.URL.String())
         http.Error(w, "No support for non-proxy requests", 500)
         return
     }
@@ -93,6 +99,7 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
     resp, err := p.tr.RoundTrip(r)
     if err != nil {
+        p.log.Debug("%s: %s", r.Host, err)
         http.Error(w, err.Error(), 500)
         return
     }
@@ -106,6 +113,7 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
     t2 := time.Now()
 
+    p.log.Debug("%s: %d %d %s %s\n", r.Host, resp.StatusCode, nr, t2.Sub(t0), r.URL.String())
     // Timing log
     p.log.URL(resp.StatusCode, r.URL.String(), nr, t1.Sub(t0), t2.Sub(t1))
 }
@@ -139,4 +147,93 @@ func copyHeaders(d, s http.Header) {
         }
     }
 }
+
+
+// handle HTTP CONNECT
+func (p *HTTPProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
+    
+    h, ok := w.(http.Hijacker)
+    if !ok {
+        p.log.Warn("can't do CONNECT: hijack failed")
+        http.Error(w, "Can't support CONNECT", 501)
+        return
+    }
+
+    client, _, err := h.Hijack()
+    if err != nil {
+        // Likely HTTP/2.x -- its OK
+        p.log.Warn("can't do CONNECT: hijack failed: %s", err)
+        http.Error(w, "Can't support CONNECT", 501)
+        client.Close()
+        return
+    }
+
+    host := extractHost(r.URL)
+
+    dest, err := p.dial("tcp", host)
+    if err != nil {
+        p.log.Warn("can't connect to %s: %s", host, err)
+        http.Error(w, fmt.Sprintf("can't connect: %s", err), 500)
+        client.Close()
+        return
+    }
+
+    client.Write(_200Ok)
+
+    s := client.(*net.TCPConn)
+    d := dest.(*net.TCPConn)
+
+    p.log.Debug("%s: CONNECT %s",
+                s.RemoteAddr().String(), host)
+
+    // XXX Do we just fork and return?
+
+    go p.iocopy(d, s)
+    go p.iocopy(s, d)
+}
+
+// Dial using the transport or built in
+func (p *HTTPProxy) dial(netw, addr string) (net.Conn, error) {
+    if p.tr.Dial != nil {
+        return p.tr.Dial(netw, addr)
+    }
+
+    return net.Dial(netw, addr)
+}
+
+func isReset(err error) bool {
+    if oe, ok := err.(*net.OpError); ok {
+        if se, ok := oe.Err.(*os.SyscallError); ok {
+            if se.Err == syscall.EPIPE || se.Err == syscall.ECONNRESET {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+// Copy from 's' to 'd'
+func (p *HTTPProxy) iocopy(d, s *net.TCPConn) {
+    _, err := io.Copy(d, s)
+    if err != nil && err != io.EOF && !isReset(err) {
+            p.log.Warn("copy from %s to %s: %s",
+                        s.RemoteAddr().String(), d.RemoteAddr().String(), err)
+    }
+
+    d.CloseWrite()
+    s.CloseRead()
+}
+
+func extractHost(u *url.URL) string {
+    h := u.Host
+
+    i := strings.LastIndex(h, ":")
+    if i < 0  {
+        h += ":80"
+    }
+    return h
+}
+
+// used when we hijack for CONNECT
+var _200Ok []byte = []byte("HTTP/1.0 200 OK\r\n\r\n")
 
