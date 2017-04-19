@@ -400,7 +400,7 @@ func (l *Logger) Crit(format string, v ...interface{}) {
 
 
 // Err prints logs at level ERR
-func (l *Logger) Err(format string, v ...interface{}) {
+eunc (l *Logger) Error(format string, v ...interface{}) {
     if l.Loggable(LOG_ERR) {
         s := fmt.Sprintf(format, v...)
         l.Output(2, LOG_ERR, s)
