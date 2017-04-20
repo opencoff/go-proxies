@@ -40,25 +40,7 @@ func newLogger(dl *L.Logger, ulog string) (*myLogger, error) {
 
 
 // Interface implementation of proxy.Logger
-
-/*
-func (m *myLogger) Debug(fmt string, args ..interface{}) {
-    m.dl.Debug(fmt, args...)
-}
-
-func (m *myLogger) Info(fmt string, args ..interface{}) {
-    m.dl.Info(fmt, args...)
-}
-
-func (m *myLogger) Warn(fmt string, args ..interface{}) {
-    m.dl.Warn(fmt, args...)
-}
-
-
-func (m *myLogger) Error(fmt string, args ..interface{}) {
-    m.dl.Error(fmt, args...)
-}
-*/
+// We inherit everything from L.Logger and add only this new method
 
 
 func (m *myLogger) URL(stat int, url string, nr int64, t0, t1 time.Duration) {
@@ -68,8 +50,8 @@ func (m *myLogger) URL(stat int, url string, nr int64, t0, t1 time.Duration) {
     d1 := "-"
 
     if stat == 200 {
-        d0 = fmt.Sprintf("%s", t0)
-        d1 = fmt.Sprintf("%s", t1)
+        d0 = format(t0)
+        d1 = format(t1)
     }
 
     now := time.Now().UTC().Format(time.RFC3339)
@@ -79,3 +61,13 @@ func (m *myLogger) URL(stat int, url string, nr int64, t0, t1 time.Duration) {
 }
 
 
+func format(t time.Duration) string {
+    u0     := t.Nanoseconds() / 1000
+    ma, mf := u0 / 1000, u0 % 1000
+
+    if ma == 0 {
+        return fmt.Sprintf("%3.3d us", mf)
+    }
+
+    return fmt.Sprintf("%d.%3.3d ms", ma, mf)
+}

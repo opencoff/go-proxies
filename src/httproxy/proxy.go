@@ -172,8 +172,8 @@ func (p *HTTPProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
     dest, err := p.dial("tcp", host)
     if err != nil {
-        p.log.Warn("can't connect to %s: %s", host, err)
-        http.Error(w, fmt.Sprintf("can't connect: %s", err), 500)
+        p.log.Debug("can't connect to %s: %s", host, err)
+        http.Error(w, fmt.Sprintf("can't connect to %s", host), 500)
         client.Close()
         return
     }
@@ -216,7 +216,7 @@ func isReset(err error) bool {
 func (p *HTTPProxy) iocopy(d, s *net.TCPConn) {
     _, err := io.Copy(d, s)
     if err != nil && err != io.EOF && !isReset(err) {
-            p.log.Warn("copy from %s to %s: %s",
+            p.log.Debug("copy from %s to %s: %s",
                         s.RemoteAddr().String(), d.RemoteAddr().String(), err)
     }
 
