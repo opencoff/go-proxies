@@ -1,12 +1,12 @@
-Package: gosocksd
+Package: goproxies
 Architecture: %(arch)s
 Section: net
 Version: %(version)s
 Priority: optional
 Maintainer: Sudhi Herle <sudhi.herle@gmail.com>
 Depends: libc6 (>= 2.3)
-Description: Simple and scalable SOCKS5 server written in go.
- This socks server supports simple "allow/deny" ACL. Currently
+Description: Socksv5 and HTTP Proxy Servers in Go.
+ The  servers supports simple "allow/deny" ACL. Currently
  there is no support for authentication.
  .
  Version %(version)s built on %(date)s.

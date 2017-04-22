@@ -6,6 +6,7 @@ import (
     "os"
     "fmt"
     "net"
+    "sync"
     "time"
     "context"
     "syscall"
@@ -23,8 +24,13 @@ type Logger interface {
 }
 
 type HTTPProxy struct {
+    *net.TCPListener
+
     // listen address
-    addr    string
+    conf    *ListenConf
+
+    stop  chan bool
+    wg    sync.WaitGroup
 
     // logger
     log     Logger
@@ -36,8 +42,19 @@ type HTTPProxy struct {
 }
 
 
-func NewHTTPProxy(log Logger, addr string, tr *http.Transport) (*HTTPProxy, error) {
-    p := &HTTPProxy{addr: addr, log: log}
+func NewHTTPProxy(log Logger, lc *ListenConf, tr *http.Transport) (*HTTPProxy, error) {
+    addr    := lc.Addr
+    la, err := net.ResolveTCPAddr("tcp", addr)
+    if err != nil {
+        die("Can't resolve %s: %s", addr, err)
+    }
+
+    ln, err := net.ListenTCP("tcp", la)
+    if err != nil {
+        die("Can't listen on %s: %s", addr, err)
+    }
+
+    p := &HTTPProxy{conf: lc, log: log, stop: make(chan bool)}
     s := &http.Server{
             Addr: addr,
             Handler: p,
@@ -50,6 +67,7 @@ func NewHTTPProxy(log Logger, addr string, tr *http.Transport) (*HTTPProxy, erro
         tr = &http.Transport{}
     }
 
+    p.TCPListener = ln
     p.srv = s
     p.tr  = tr
 
@@ -60,21 +78,26 @@ func NewHTTPProxy(log Logger, addr string, tr *http.Transport) (*HTTPProxy, erro
 // Start listener
 func (p *HTTPProxy) Start() {
 
+    p.wg.Add(1)
     go func() {
-        p.log.Info("Starting HTTP proxy on %s ..", p.addr)
-        if err := p.srv.ListenAndServe(); err != nil {
-            die("Can't start proxy: %s\n%+v", err, err)
-        }
+        defer p.wg.Done()
+        p.log.Info("Starting HTTP proxy on %s ..", p.conf.Addr)
+        p.srv.Serve(p)
     }()
 }
+
+
 
 // Stop server
 // XXX Hijacked Websocket conns are not shutdown here
 func (p *HTTPProxy) Stop() {
-    cx, _ := context.WithTimeout(context.Background(), 10 * time.Second)
+    close(p.stop)
 
+    cx, _ := context.WithTimeout(context.Background(), 10 * time.Second)
     p.srv.Shutdown(cx)
-    p.log.Info("Listener %s shutdown", p.addr)
+
+    p.wg.Wait()
+    p.log.Info("Listener %s shutdown", p.conf.Addr)
 }
 
 
@@ -119,6 +142,7 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 
+
 var delHeaders = []string{
                     "Accept-Encoding",
                     "Proxy-Connection",
@@ -133,6 +157,16 @@ func scrubReq(r *http.Request) {
     for _, k := range delHeaders {
         r.Header.Del(k)
     }
+
+    if clientIP, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+        // If we aren't the first proxy retain prior
+        // X-Forwarded-For information as a comma+space
+        // separated list and fold multiple headers into one.
+        if prior, ok := r.Header["X-Forwarded-For"]; ok {
+            clientIP = strings.Join(prior, ", ") + ", " + clientIP
+        }
+        r.Header.Set("X-Forwarded-For", clientIP)
+    }
 }
 
 // First delete the old headers and add the new ones
@@ -146,6 +180,8 @@ func copyHeaders(d, s http.Header) {
             d.Add(k, v)
         }
     }
+
+    // XXX do we add X-Forwarded-For?
 }
 
 
@@ -201,6 +237,7 @@ func (p *HTTPProxy) dial(netw, addr string) (net.Conn, error) {
     return net.Dial(netw, addr)
 }
 
+// Return true if the err represents a TCP PIPE or RESET error
 func isReset(err error) bool {
     if oe, ok := err.(*net.OpError); ok {
         if se, ok := oe.Err.(*os.SyscallError); ok {
@@ -234,6 +271,90 @@ func extractHost(u *url.URL) string {
     return h
 }
 
-// used when we hijack for CONNECT
-var _200Ok []byte = []byte("HTTP/1.0 200 OK\r\n\r\n")
+// Accept() handler for http.Serve
+func (p *HTTPProxy) Accept() (net.Conn, error) {
+    ln := p.TCPListener
+    for {
+        ln.SetDeadline(time.Now().Add(2 * time.Second))
+
+        nc, err := ln.Accept()
+
+        select {
+        case _ = <- p.stop:
+            if err == nil {
+                nc.Close()
+            }
+            return nil, &errShutdown
+
+        default:
+        }
+
+        if err != nil {
+            if ne, ok := err.(net.Error); ok {
+                if ne.Timeout() || ne.Temporary() {
+                    continue
+                }
+            }
+            return nil, err
+        }
+
+        if !p.aclOK(nc) {
+            // XXX Log?
+            p.log.Debug("ACL failure: %s", nc.RemoteAddr().String())
+            nc.Close()
+            continue
+        }
+
+        return nc, nil
+    }
+}
+
+
+// Return true if the new connection 'conn' passes the ACL checks
+// Return false otherwise
+func (p *HTTPProxy) aclOK(conn net.Conn) bool {
+    cfg    := p.conf
+    h, ok  := conn.RemoteAddr().(*net.TCPAddr)
+    if !ok {
+        p.log.Debug("%s can't extract TCP Addr", conn.RemoteAddr().String())
+        return false
+    }
+
+    for _, n := range cfg.Deny {
+        if n.Contains(h.IP) {
+            return false
+        }
+    }
+
+    if len(cfg.Allow) == 0 {
+        return true
+    }
+
+    for _, n := range cfg.Allow {
+        if n.Contains(h.IP) {
+            return true
+        }
+    }
+
+    return false
+}
+
+var (
+    errShutdown = proxyErr{Err: "server shutdown", temp: false}
+
+    // used when we hijack for CONNECT
+    _200Ok []byte = []byte("HTTP/1.0 200 OK\r\n\r\n")
+)
+
+type proxyErr struct {
+    error
+    Err string
+    temp bool       // is temporary error?
+}
+
+// net.Error interface implementation
+func (e *proxyErr) String()    string  { return e.Err }
+func (e *proxyErr) Temporary() bool { return e.temp }
+func (e *proxyErr) Timeout()   bool { return false }
+
 

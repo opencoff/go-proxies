@@ -9,15 +9,16 @@
 package main
 
 import (
-	"fmt"
-	"io/ioutil"
 	"os"
-	"os/signal"
+	"fmt"
+	"net"
+	"time"
 	"runtime"
-	"runtime/pprof"
 	"strings"
 	"syscall"
-	"time"
+	"io/ioutil"
+	"os/signal"
+	"runtime/pprof"
 
 	flag "github.com/ogier/pflag"
 	yaml "gopkg.in/yaml.v2"
@@ -41,11 +42,36 @@ type Conf struct {
 	Logging          string         `yaml:"log"`
 	LogLevel         string         `yaml:"loglevel"`
 	URLlog			 string			`yaml:"urllog"`
-	Listen			[]string		`yaml:"listen"`
+	Listen			[]ListenConf
 }
 
 type ListenConf struct {
-	Addr		string
+	Addr		string		`yaml:"addr"`
+	Allow		[]subnet	`yaml:"allow"`
+	Deny		[]subnet	`yaml:"deny"`
+}
+
+
+// An IP/Subnet
+type subnet struct {
+    net.IPNet
+}
+
+// Custom unmarshaler for IPNet
+func (ipn *subnet) UnmarshalYAML(unm func(v interface{}) error) error  {
+    var s string
+
+    // First unpack the bytes as a string. We then parse the string
+    // as a CIDR
+	err := unm(&s)
+	if err != nil { return err }
+
+    _, net, err := net.ParseCIDR(s)
+    if err == nil {
+        ipn.IP   = net.IP
+        ipn.Mask = net.Mask
+    }
+    return err
 }
 
 
@@ -91,12 +117,11 @@ func main() {
 
 	args := flag.Args()
 	if len(args) < 1 {
-		die("Usage: %s", usage)
+		die("No config file!\nUsage: %s", usage)
 	}
 
 
-	cfgfile := args[0]
-
+	cfgfile  := args[0]
 	cfg, err := ReadYAML(cfgfile)
 	if err != nil {
 		die("Can't read config file %s: %s", cfgfile, err)
@@ -130,21 +155,21 @@ func main() {
 		die("Can't create my-logger: %s", err)
 	}
 
-	log.Info("%s -- httproxy - %s [%s - built on %s] starting up (logging at %s)...",
-		time.Now().UTC().Format(time.RFC822Z), ProductVersion, RepoVersion, Buildtime,
-		L.PrioString[log.Prio()])
-
 	// Enable rotation at 00:01:00 (1 min past midnight); keep 7 days worth of logs
 	err = log.EnableRotation(00, 01, 00, 7)
 	if err != nil {
 		warn("Can't enable log rotation: %s", err)
 	}
 
+	log.Info("%s -- httproxy - %s [%s - built on %s] starting up (logging at %s)...",
+		time.Now().UTC().Format(time.RFC822Z), ProductVersion, RepoVersion, Buildtime,
+		L.PrioString[log.Prio()])
+
 	var srv []*HTTPProxy
 
 	for _, v := range cfg.Listen {
-		log.Info("Listening on %s ..", v)
-		s, err := NewHTTPProxy(log, v, nil)
+		log.Info("Listening on %s ..", v.Addr)
+		s, err := NewHTTPProxy(log, &v, nil)
 		if err != nil {
 			die("Can't create listener on %s: %s", v, err)
 		}
