@@ -1,20 +1,20 @@
 
 #
-# Manifest for debian version of gosocksd
+# Manifest for debian version of goproxy
 #
 
 # Install the package in this dir first
-#!go build -o %(debdir)s/usr/bin/gosocksd socksd.go
-cp %(templatedir)s/../socksd %(debdir)s/usr/bin/gosocksd
+#!go build -o %(debdir)s/usr/bin/goproxy goproxy.go
+cp %(templatedir)s/../goproxy %(debdir)s/usr/bin/goproxy
 
-cp %(templatedir)s/socksd.conf   /etc/gosocksd/socksd.conf.pkg
+cp %(templatedir)s/goproxy.conf   /etc/goproxy/goproxy.conf.pkg
 
-cp %(templatedir)s/etc.default   /etc/default/gosocksd
-cp %(templatedir)s/socksd.conf   /usr/share/doc/gosocksd/socksd.conf
-cp %(srcdir)s/README     /usr/share/doc/gosocksd/README.Debian
+cp %(templatedir)s/etc.default   /etc/default/goproxy
+cp %(templatedir)s/goproxy.conf   /usr/share/doc/goproxy/goproxy.conf
+cp %(srcdir)s/README     /usr/share/doc/goproxy/README.Debian
 
 # Startup script
-cp %(templatedir)s/gosocksd.init       /etc/init.d/gosocksd
+cp %(templatedir)s/goproxy.init       /etc/init.d/goproxy
 
 # EOF
 

@@ -7,20 +7,20 @@
 #          Modified for go-socksd by Sudhi Herle <sudhi.herle@gmail.com>
 
 ### BEGIN INIT INFO
-# Provides:          gosocksd
+# Provides:          goproxy
 # Required-Start:    $network $local_fs $syslog
 # Required-Stop:     $network $local_fs $syslog
 # Default-Start:     2 3 4 5
 # Default-Stop:      0 1 6
-# Short-Description: gosocksd: High performance SOCKS server
+# Short-Description: goproxy: High performance SOCKS server
 ### END INIT INFO
 
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-DAEMON=/usr/bin/gosocksd
-NAME=gosocksd
-DESC="gosocksd SOCKS server"
-CONF="/etc/gosocksd/socksd.conf"
-DEF="/etc/default/gosocksd"
+DAEMON=/usr/bin/goproxy
+NAME=goproxy
+DESC="goproxy SOCKS server"
+CONF="/etc/goproxy/goproxy.conf"
+DEF="/etc/default/goproxy"
 
 # XXX Change uid/gid to some benign value
 UID=nobody

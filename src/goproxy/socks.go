@@ -96,32 +96,6 @@ func (px *socksProxy) Stop() {
 }
 
 
-// ACL for incoming connection
-func (px *socksProxy) AclOK(conn net.Conn) bool {
-    cfg := px.cfg
-    h, ok  := conn.RemoteAddr().(*net.TCPAddr)
-    if !ok {
-        die("%s Can't get TCPAddr from Conn object?!", conn.RemoteAddr().String())
-    }
-
-    for _, n := range cfg.Deny {
-        if n.Contains(h.IP) {
-            return false
-        }
-    }
-
-    if len(cfg.Allow) == 0 {
-        return true
-    }
-
-    for _, n := range cfg.Allow {
-        if n.Contains(h.IP) {
-            return true
-        }
-    }
-
-    return false
-}
 
 // start the proxy
 // Caller is expected to kick this off as a go-routine
@@ -177,7 +151,7 @@ func (px *socksProxy) accept() {
         log.Debug("Accepted connection from %s", rem)
 
         // Check ACL
-        if !px.AclOK(conn) {
+        if !AclOK(px.cfg, conn) {
             conn.Close()
             log.Debug("Denied %s due to ACL", rem)
             continue

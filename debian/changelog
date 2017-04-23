@@ -1,6 +1,6 @@
-gosocksd (%(version)s) stable; urgency=low
+goproxy (%(version)s) stable; urgency=low
 
-  * This is version %(version)s of gosocksd socks server.
+  * This is version %(version)s of HTTP and SOCKSv5 proxy server.
 
  -- Sudhi Herle <sudhi.herle@gmail.com>  %(date)s
 

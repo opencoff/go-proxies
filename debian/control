@@ -1,4 +1,4 @@
-Package: goproxies
+Package: goproxy
 Architecture: %(arch)s
 Section: net
 Version: %(version)s
