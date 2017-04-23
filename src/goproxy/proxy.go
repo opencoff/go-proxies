@@ -1,27 +1,27 @@
 // proxy.go -- http proxy logic
+//
+// Author: Sudhi Herle <sudhi@herle.net>
+//
+// This software does not come with any express or implied
+// warranty; it is provided "as is". No claim  is made to its
+// suitability for any purpose.
+
 package main
 
 import (
     "io"
-    "os"
     "fmt"
     "net"
     "sync"
     "time"
     "context"
-    "syscall"
     "strings"
     "net/url"
     "net/http"
+
+	L "github.com/opencoff/go-lib/logger"
 )
 
-type Logger interface {
-    Debug(fmt string, args ...interface{})
-    Info(fmt string, args ...interface{})
-    Warn(fmt string, args ...interface{})
-    Error(fmt string, args ...interface{})
-    URL(respCode int, url string, nr int64, t0, t1 time.Duration)
-}
 
 type HTTPProxy struct {
     *net.TCPListener
@@ -33,7 +33,8 @@ type HTTPProxy struct {
     wg    sync.WaitGroup
 
     // logger
-    log     Logger
+    log     *L.Logger
+    ulog    *L.Logger
 
     // Transport for downstream connection
     tr      *http.Transport
@@ -42,8 +43,8 @@ type HTTPProxy struct {
 }
 
 
-func NewHTTPProxy(log Logger, lc *ListenConf, tr *http.Transport) (*HTTPProxy, error) {
-    addr    := lc.Addr
+func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
+    addr    := lc.Listen
     la, err := net.ResolveTCPAddr("tcp", addr)
     if err != nil {
         die("Can't resolve %s: %s", addr, err)
@@ -54,7 +55,7 @@ func NewHTTPProxy(log Logger, lc *ListenConf, tr *http.Transport) (*HTTPProxy, e
         die("Can't listen on %s: %s", addr, err)
     }
 
-    p := &HTTPProxy{conf: lc, log: log, stop: make(chan bool)}
+    p := &HTTPProxy{conf: lc, log: log, ulog: ulog, stop: make(chan bool)}
     s := &http.Server{
             Addr: addr,
             Handler: p,
@@ -63,14 +64,12 @@ func NewHTTPProxy(log Logger, lc *ListenConf, tr *http.Transport) (*HTTPProxy, e
             MaxHeaderBytes: 1 << 20,
         }
 
-    if tr == nil {
-        tr = &http.Transport{}
-    }
 
     p.TCPListener = ln
     p.srv = s
-    p.tr  = tr
+    p.tr  = &http.Transport{}
 
+    log.Info("HTTP listening on %s ..", lc.Listen)
     return p, nil
 }
 
@@ -81,7 +80,7 @@ func (p *HTTPProxy) Start() {
     p.wg.Add(1)
     go func() {
         defer p.wg.Done()
-        p.log.Info("Starting HTTP proxy on %s ..", p.conf.Addr)
+        p.log.Info("Starting HTTP proxy on %s ..", p.conf.Listen)
         p.srv.Serve(p)
     }()
 }
@@ -97,7 +96,7 @@ func (p *HTTPProxy) Stop() {
     p.srv.Shutdown(cx)
 
     p.wg.Wait()
-    p.log.Info("Listener %s shutdown", p.conf.Addr)
+    p.log.Info("HTTP proxy on %s shutdown", p.conf.Listen)
 }
 
 
@@ -138,10 +137,32 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
     p.log.Debug("%s: %d %d %s %s\n", r.Host, resp.StatusCode, nr, t2.Sub(t0), r.URL.String())
     // Timing log
-    p.log.URL(resp.StatusCode, r.URL.String(), nr, t1.Sub(t0), t2.Sub(t1))
+    if p.ulog != nil {
+        d0 := "-"
+        d1 := "-"
+
+        if resp.StatusCode == 200 {
+            d0 = format(t1.Sub(t0))
+            d1 = format(t2.Sub(t1))
+        }
+
+        now := time.Now().UTC().Format(time.RFC3339)
+
+        p.ulog.Info("time=%q url=%q status=\"%d\" bytes=\"%d\" upstream=%q downstream=%q",
+                        now, r.URL.String(), resp.StatusCode, nr, d0, d1)
+    }
 }
 
 
+func extractHost(u *url.URL) string {
+    h := u.Host
+
+    i := strings.LastIndex(h, ":")
+    if i < 0  {
+        h += ":80"
+    }
+    return h
+}
 
 var delHeaders = []string{
                     "Accept-Encoding",
@@ -237,17 +258,6 @@ func (p *HTTPProxy) dial(netw, addr string) (net.Conn, error) {
     return net.Dial(netw, addr)
 }
 
-// Return true if the err represents a TCP PIPE or RESET error
-func isReset(err error) bool {
-    if oe, ok := err.(*net.OpError); ok {
-        if se, ok := oe.Err.(*os.SyscallError); ok {
-            if se.Err == syscall.EPIPE || se.Err == syscall.ECONNRESET {
-                return true
-            }
-        }
-    }
-    return false
-}
 
 // Copy from 's' to 'd'
 func (p *HTTPProxy) iocopy(d, s *net.TCPConn) {
@@ -259,16 +269,6 @@ func (p *HTTPProxy) iocopy(d, s *net.TCPConn) {
 
     d.CloseWrite()
     s.CloseRead()
-}
-
-func extractHost(u *url.URL) string {
-    h := u.Host
-
-    i := strings.LastIndex(h, ":")
-    if i < 0  {
-        h += ":80"
-    }
-    return h
 }
 
 // Accept() handler for http.Serve
@@ -298,7 +298,7 @@ func (p *HTTPProxy) Accept() (net.Conn, error) {
             return nil, err
         }
 
-        if !p.aclOK(nc) {
+        if !AclOK(p.conf, nc) {
             // XXX Log?
             p.log.Debug("ACL failure: %s", nc.RemoteAddr().String())
             nc.Close()
@@ -310,34 +310,6 @@ func (p *HTTPProxy) Accept() (net.Conn, error) {
 }
 
 
-// Return true if the new connection 'conn' passes the ACL checks
-// Return false otherwise
-func (p *HTTPProxy) aclOK(conn net.Conn) bool {
-    cfg    := p.conf
-    h, ok  := conn.RemoteAddr().(*net.TCPAddr)
-    if !ok {
-        p.log.Debug("%s can't extract TCP Addr", conn.RemoteAddr().String())
-        return false
-    }
-
-    for _, n := range cfg.Deny {
-        if n.Contains(h.IP) {
-            return false
-        }
-    }
-
-    if len(cfg.Allow) == 0 {
-        return true
-    }
-
-    for _, n := range cfg.Allow {
-        if n.Contains(h.IP) {
-            return true
-        }
-    }
-
-    return false
-}
 
 var (
     errShutdown = proxyErr{Err: "server shutdown", temp: false}

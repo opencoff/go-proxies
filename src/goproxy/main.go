@@ -1,4 +1,4 @@
-// main.go -- main() for http proxy
+// main.go -- main() for http proxy & socks5 proxy
 //
 // Author: Sudhi Herle <sudhi@herle.net>
 //
@@ -23,7 +23,6 @@ import (
 	flag "github.com/ogier/pflag"
 	yaml "gopkg.in/yaml.v2"
 
-	// My logger
 	L "github.com/opencoff/go-lib/logger"
 )
 
@@ -36,19 +35,30 @@ var ProductVersion string = "UNDEFINED"
 // XXX Where should this be set? Config file??
 const PROFILE_MINS = 30
 
+// Interface for all proxies
+type Proxy interface {
+	Start()
+	Stop()
+}
+
 
 // List of config entries
 type Conf struct {
 	Logging          string         `yaml:"log"`
 	LogLevel         string         `yaml:"loglevel"`
 	URLlog			 string			`yaml:"urllog"`
-	Listen			[]ListenConf
+	Http  			[]ListenConf
+	Socks 			[]ListenConf
 }
 
 type ListenConf struct {
-	Addr		string		`yaml:"addr"`
+	Listen		string		`yaml:"listen"`
+	Bind		string		`yaml:"bind"`
 	Allow		[]subnet	`yaml:"allow"`
 	Deny		[]subnet	`yaml:"deny"`
+
+	// Global rate limit
+	Ratelimit	int   		`yaml:"ratelimit"`
 }
 
 
@@ -104,14 +114,14 @@ func main() {
 	usage := fmt.Sprintf("%s [options] config-file", os.Args[0])
 
 	flag.Usage = func() {
-		fmt.Printf("httproxy - A simple HTTP Proxy\nUsage: %s\n", usage)
+		fmt.Printf("goproxy - A simple HTTP/SOCKSv5 Proxy\nUsage: %s\n", usage)
 		flag.PrintDefaults()
 	}
 
 	flag.Parse()
 
 	if *verFlag {
-		fmt.Printf("httproxy - %s [%s; %s]\n", ProductVersion, RepoVersion, Buildtime)
+		fmt.Printf("goproxy - %s [%s; %s]\n", ProductVersion, RepoVersion, Buildtime)
 		os.Exit(0)
 	}
 
@@ -145,33 +155,53 @@ func main() {
 		logf = cfg.Logging
 	}
 
-	dlog, err := L.NewLogger(logf, prio, "httproxy", logflags)
+	log, err := L.NewLogger(logf, prio, "goproxy", logflags)
 	if err != nil {
 		die("Can't create logger: %s", err)
 	}
 
-	log, err := newLogger(dlog, cfg.URLlog)
-	if err != nil {
-		die("Can't create my-logger: %s", err)
-	}
-
-	// Enable rotation at 00:01:00 (1 min past midnight); keep 7 days worth of logs
 	err = log.EnableRotation(00, 01, 00, 7)
 	if err != nil {
 		warn("Can't enable log rotation: %s", err)
 	}
 
-	log.Info("%s -- httproxy - %s [%s - built on %s] starting up (logging at %s)...",
-		time.Now().UTC().Format(time.RFC822Z), ProductVersion, RepoVersion, Buildtime,
-		L.PrioString[log.Prio()])
+    var ulog *L.Logger
 
-	var srv []*HTTPProxy
+    if len(cfg.URLlog) > 0 {
+        ulog, err := L.NewFilelog(cfg.URLlog, L.LOG_INFO, "", 0)
+        if err != nil {
+            die("Can't create URL logger: %s", err)
+        }
 
-	for _, v := range cfg.Listen {
-		log.Info("Listening on %s ..", v.Addr)
-		s, err := NewHTTPProxy(log, &v, nil)
+        ulog.EnableRotation(00, 00, 01, 01)
+    }
+
+
+	log.Info("goproxy - %s [%s - built on %s] starting up (logging at %s)...",
+		ProductVersion, RepoVersion, Buildtime, L.PrioString[log.Prio()])
+
+	var srv []Proxy
+
+	for _, v := range cfg.Http {
+		if len(v.Listen) == 0 {
+			die("http listen address is empty?")
+		}
+		s, err := NewHTTPProxy(&v, log, ulog)
 		if err != nil {
-			die("Can't create listener on %s: %s", v, err)
+			die("Can't create http listener on %s: %s", v, err)
+		}
+
+		srv = append(srv, s)
+		s.Start()
+	}
+
+	for _, v := range cfg.Socks {
+		if len(v.Listen) == 0 {
+			die("SOCKSv5 listen address is empty?")
+		}
+		s, err := NewSocksv5Proxy(&v, log, ulog)
+		if err != nil {
+			die("Can't create socks listener on %s: %s", v, err)
 		}
 
 		srv = append(srv, s)

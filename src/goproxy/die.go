@@ -1,3 +1,10 @@
+// die.go -- warn() and die()
+//
+// Author: Sudhi Herle <sudhi@herle.net>
+//
+// This software does not come with any express or implied
+// warranty; it is provided "as is". No claim  is made to its
+// suitability for any purpose.
 package main
 
 import (
