@@ -1,8 +1,8 @@
 What is this?
 =============
 A simple implementation of HTTP and SOCKSv5 proxy servers in golang.
-Both are expected to scale well on a modern multi-processor box.
-They runs on any platform that is supported by Go.
+The proxy is expected to scale well on a modern multi-processor box.
+It runs on any platform that is supported by Go.
 
 Building the servers
 ---------------------
@@ -19,6 +19,10 @@ You can cross-compile by passing appropriate architecture names to
 the script. e.g., to build on host OS X for openbsd-amd64::
 
     ./build --arch=openbsd-amd64 
+
+You can build a statically linked executable (with no other runtime dependency)::
+
+    ./build -s
 
 The script also has other options. To see them::
 
