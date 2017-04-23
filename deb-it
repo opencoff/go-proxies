@@ -4,7 +4,7 @@
 
 
 # Bump this for every new release
-VER=0.5.4
+VER=0.2.0
 
 
 die() {
@@ -24,5 +24,7 @@ GOARCH=amd64
 export GOOS GOARCH
 
 pwd=`pwd`
-go build -o socksd socksd.go
-$mk $GOARCH $pwd/debian $VER $pwd
+for a in amd64 arm64; do
+    ./build -s -a linux-$a -V $VER  || exit 1
+    $mk $a $pwd/debian $VER $pwd    || exit 1
+done

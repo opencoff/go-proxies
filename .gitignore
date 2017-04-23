@@ -29,3 +29,4 @@ gosocksd
 vendor/src/*
 vendor/pkg/*
 bin/*
+*.deb

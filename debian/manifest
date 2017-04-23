@@ -5,13 +5,13 @@
 
 # Install the package in this dir first
 #!go build -o %(debdir)s/usr/bin/goproxy goproxy.go
-cp %(templatedir)s/../goproxy %(debdir)s/usr/bin/goproxy
+cp %(templatedir)s/../bin/linux-%(arch)s/goproxy %(debdir)s/usr/bin/goproxy
 
 cp %(templatedir)s/goproxy.conf   /etc/goproxy/goproxy.conf.pkg
 
 cp %(templatedir)s/etc.default   /etc/default/goproxy
 cp %(templatedir)s/goproxy.conf   /usr/share/doc/goproxy/goproxy.conf
-cp %(srcdir)s/README     /usr/share/doc/goproxy/README.Debian
+cp %(srcdir)s/README.rst /usr/share/doc/goproxy/README.Debian
 
 # Startup script
 cp %(templatedir)s/goproxy.init       /etc/init.d/goproxy
