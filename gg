@@ -100,6 +100,10 @@ rebuild
 list
     Show a list of vendored and pinned repositories.
 
+upgrade
+    Reformat manifest to match conventions of 'vndr'; this is a
+    one-time operation; it does no validations; USE WITH CAUTION!
+
 The remote repositories are recorded in 'vendor/manifest.txt'.
 
 Global options:
@@ -179,10 +183,10 @@ rebuild_manifest() {
                 cd $rr
 
                 local repo=$(echo $rr | sed -e "s!^$vend/src/!!")
-                local u=$(git config --get remote.origin.url)
                 local v=$(git describe --always --abbrev=64)
+                local u=$(git config --get remote.origin.url)
 
-                echo "$repo $u $v" >> $mftmp
+                echo "$repo $v $u" >> $mftmp
             )
         done
 
@@ -219,7 +223,6 @@ upgrade_old() {
     return 0
 }
 
-
 # update all the sub-modules and generate a new manifest.
 # NB: This implicitly fetches the latest upstream HEAD.
 # update_all /abs/path/to/vendor
@@ -235,8 +238,8 @@ update_all() {
         while read line; do
             set -- $line
             local z=$1
-            local u=$2
-            local v=$3
+            local v=$2
+            local u=$3
             local oldv=$v
 
             cd $vend/src/$z
@@ -251,7 +254,7 @@ update_all() {
                 progress "$z: Updated to $v .."
             fi
 
-            echo "$z $u $v" >> $mftmp
+            echo "$z $v $u" >> $mftmp
         done || exit 1
 
     cd $wd
@@ -279,8 +282,8 @@ update_one() {
         while read line; do
             set -- $line
             local z=$1
-            local u=$2
-            local v=$3
+            local v=$2
+            local u=$3
             local oldv=$v
 
             if [ $z != $repo ]; then
@@ -300,7 +303,7 @@ update_one() {
                 progress "$z: Updated to $v .."
             fi
 
-            echo "$z $u $v" >> $mftmp
+            echo "$z $v $u" >> $mftmp
         done || exit 1
 
     if maybe_update_manifest $mf $mftmp; then
@@ -323,8 +326,8 @@ sync_all() {
         while read line; do
             set -- $line
             local z=$1
-            local u=$2
-            local v=$3
+            local v=$2
+            local u=$3
 
             [ -z "$v" ] && v=HEAD
 
@@ -348,7 +351,7 @@ sync_all() {
                   $e git checkout $Gitquiet $v
               fi
             ) || exit 1
-          echo "$z $u $v" >> $mftmp
+          echo "$z $v $u" >> $mftmp
         done || exit 1
 
     if maybe_update_manifest $mf $mftmp; then
@@ -541,10 +544,6 @@ case $cmd in
         fetch $vendor $repo
         ;;
 
-    upgrade)
-        upgrade_old $vendor
-        ;;
-
     update)
         repo=$1
         tag=$2
@@ -566,6 +565,10 @@ case $cmd in
 
     list)
         list_all $vendor
+        ;;
+
+    upgrade)
+        upgrade_old $vendor
         ;;
 
     *)  # We just pass it off to go..
