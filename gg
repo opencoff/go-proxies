@@ -195,6 +195,31 @@ rebuild_manifest() {
 }
 
 
+# Upgrade old manifest to a new style
+upgrade_old() {
+    local vend=$1
+    local rr=
+    local mf=$vend/manifest.txt
+    local mftmp=$mf.tmp.$$.$RANDOM
+
+    grep -v '#' $mf | \
+        while read line; do
+            set -- $line
+            local z=$1
+            local u=$2
+            local v=$3
+
+            echo "$z $v $u" >> $mftmp
+        done || exit 1
+
+    if maybe_update_manifest $mf $mftmp; then
+        $e gitx add $mf
+    fi
+
+    return 0
+}
+
+
 # update all the sub-modules and generate a new manifest.
 # NB: This implicitly fetches the latest upstream HEAD.
 # update_all /abs/path/to/vendor
@@ -514,6 +539,10 @@ case $cmd in
         [ -n "$repo" ] || die "missing repo name for fetch"
 
         fetch $vendor $repo
+        ;;
+
+    upgrade)
+        upgrade_old $vendor
         ;;
 
     update)
