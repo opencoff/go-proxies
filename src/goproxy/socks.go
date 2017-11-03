@@ -99,7 +99,6 @@ func (px *socksProxy) Stop() {
 
 // start the proxy
 // Caller is expected to kick this off as a go-routine
-// XXX Need to rate limit - do we do it per source IP?
 // XXX Also need a global limit on total concurrent connections?
 func (px *socksProxy) accept() {
     ln   := px.TCPListener

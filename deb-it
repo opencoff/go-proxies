@@ -4,7 +4,10 @@
 
 
 # Bump this for every new release
-VER=0.3.0
+VER=0.4.0
+
+# Arch for which we want to build
+ARCH="amd64"
 
 
 die() {
@@ -19,12 +22,10 @@ if [ "x$mk" = "x" ]; then
     die "Can't find mk-deb.py"
 fi
 
-GOOS=linux
-GOARCH=amd64
-export GOOS GOARCH
 
+# We bui
 pwd=`pwd`
-for a in amd64 arm64; do
+for a in $ARCH; do
     ./build -s -a linux-$a -V $VER  || exit 1
     $mk $a $pwd/debian $VER $pwd    || exit 1
 done

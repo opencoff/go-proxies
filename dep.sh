@@ -51,7 +51,7 @@ warn() {
 }
 
 progress() {
-    echo "$@"
+    [ $Verbose -gt 0 ] && echo "$@"
     return 0
 }
 
@@ -68,26 +68,31 @@ gitx() {
 # show usage and quit
 usage() {
     cat <<EOF
-$Z - An enhancement of 'go' tool to include hassle-free
-vendor repo management and cross-compilation.
+$Z - An simple golang vendor dependency management tool.
 
 Usage: $Z [options] COMMAND [command-options]
 
 In addition to the standard set of go commands, we support the
 following additional commands:
 
-fetch|get  repo
+init
+    Initialize the current directory with necessary bits for vendor
+    dependency management.
+
+fetch|get  repo [tag]
     Run "go get" on the remote REPO and record it in the manifest.
+    If the optional TAG is specified, update the vendor repo to that
+    specific version.
 
 update  repo [tag]
 update  --all
     In the first mode, update one particular repo with the latest
     upstream contents. Optionally, one can pin the update to a
-    specific tag. This pinned tag is recorded in the vendor
+    specific TAG. This pinned tag is recorded in the vendor
     manifest.
     In the second mode, update all repositories.
 
-sync
+ensure, sync
     Checkout all the repositories in the manifest and initialize a local
     copy of the pinned, vendored repositories. Remember to run this
     whenever you switch branches (git/hg).
@@ -97,21 +102,14 @@ rebuild
     This command is useful when you have carefully pinned vendor
     repositories.
 
-list
+status, list
     Show a list of vendored and pinned repositories.
-
-upgrade
-    Reformat manifest to match conventions of 'vndr'; this is a
-    one-time operation; it does no validations; USE WITH CAUTION!
 
 The remote repositories are recorded in 'vendor/manifest.txt'.
 
 Global options:
 ---------------
 --help, -h      Show this help message and quit
---init          Initialize a directory with go 1.5+ conventions
---arch=X, -a X  Cross compile for architecture 'X'. An Arch is a
-                combination of OS and CPU. e.g., android-arm64.
 --dry-run       Run in dry-run mode (do not modify disk) [False]
 --no-git, -N    Don't run any 'git add' commands [False]
 --debug, -x     Run the tool in "debug mode" [False]
@@ -151,19 +149,25 @@ EOFx
 fetch() {
     local vendor=$1
     local repo=$2
-    local doupd=$3
+    local ver=$3
     local targ=$vendor/src/$repo
     local upd=
+    local verb=
 
-    [ -n "$doupd" ] && upd="-u"
-
+    [ $Verbose -gt 0 ] && verb="-v"
     progress "Fetching $repo .."
 
     # 'go get' will fetch $repo and all its dependencies.
     # Everything it fetches will be placed under vendor/
-    $e env GOPATH=$vendor go get $upd $repo || exit 1
+    $e env GOPATH=$vendor go get $verb -d $repo || exit 1
 
     rebuild_manifest $vendor
+
+    # if the user desires a specific version, make it so
+    if [ -n "$ver" ]; then
+        update_one $vendor $repo $ver
+    fi
+
 }
 
 
@@ -191,7 +195,7 @@ rebuild_manifest() {
         done
 
     if maybe_update_manifest $mf $mftmp; then
-        $e gitx add $mf
+        $e gitx add $mf || exit 1
     fi
     )
 
@@ -217,7 +221,7 @@ upgrade_old() {
         done || exit 1
 
     if maybe_update_manifest $mf $mftmp; then
-        $e gitx add $mf
+        $e gitx add $mf || exit 1
     fi
 
     return 0
@@ -259,7 +263,7 @@ update_all() {
 
     cd $wd
     if maybe_update_manifest $mf $mftmp; then
-        $e gitx add $mf
+        $e gitx add $mf || exit 1
     fi
     return 0
 }
@@ -307,7 +311,7 @@ update_one() {
         done || exit 1
 
     if maybe_update_manifest $mf $mftmp; then
-        $e gitx add $mf
+        $e gitx add $mf || exit 1
     fi
     return 0
 }
@@ -337,6 +341,7 @@ sync_all() {
               if [ -d $d/.git ]; then
                   cd $d
                   local cv=$(git describe --always --abbrev=64)
+                  [ -z "$cv" ] && die "$z: git corrupted?"
                   if [ $cv = $v ]; then
                       progress "$z Repo already at $v; skipping .."
                   else
@@ -355,7 +360,7 @@ sync_all() {
         done || exit 1
 
     if maybe_update_manifest $mf $mftmp; then
-        $e gitx add $mf
+        $e gitx add $mf || exit 1
     fi
     return 0
 }
@@ -368,7 +373,53 @@ list_all() {
 
     [ -f $mf ] || die "No vendor repositories (no manifest)"
 
-    grep -v '#' $mf
+    grep -v '#' $mf | \
+        while read line; do
+            set -- $line
+            local z=$1
+            local v=$2
+            local u=$3
+
+            local d=$vend/src/$z
+
+            (
+              if [ -d $d/.git ]; then
+                  cd $d
+                  local cv=$(git describe --always --abbrev=64)
+                  [ -z "$cv" ] && die "$z: git corrupted?"
+                  if [ $cv = $v ]; then
+                      echo "$z: up-to-date [$v]"
+                  else
+                      echo "$z: out-of-sync [manifest: $v, repo: $cv]"
+                  fi
+              else
+                  echo "$z: Missing repository. Run '$0 ensure'"
+              fi
+          ) || exit 1
+      done || exit 1
+    return 0
+}
+
+
+# initialize and setup for vendor management
+init_repo() {
+    [ -d $PWD/src ]        || mkdir -p $PWD/src
+    [ -d $PWD/vendor/src ] || mkdir -p $PWD/vendor/src
+
+    touch vendor/manifest.txt
+    ign=$PWD/.gitignore
+
+    [ -f $ign ] || touch $ign
+    if ! grep -q vendor/src $ign; then
+        cat >> $ign <<EOFx
+
+# gg vendor management
+vendor/src/*
+vendor/pkg/*
+EOFx
+    fi
+
+    gitx add vendor/manifest.txt .gitignore || exit 1
     return 0
 }
 
@@ -376,37 +427,6 @@ list_all() {
 host=`uname|tr '[A-Z]' '[a-z]'`
 export GO15VENDOREXPERIMENT=1
 
-declare -A oses
-declare -A cpus
-declare -A cgo
-
-# Supported & Verified OS/CPU combos for this script
-oslist="linux android openbsd freebsd darwin dragonfly netbsd"
-needcgo="android"
-cpulist="i386 amd64 arm arm64"
-cpualias_i386="i486 i586 i686"
-cpualias_amd64="x86_64"
-cpualias_arm64="aarch64"
-
-# CGO Compilers for various CPU+OS combinations
-# We only note the android cross compilers here. For most other
-# platforms, this script is rarely called to cross-compile..
-android_i386=i686-linux-android-gcc
-android_arm64=aarch64-linux-android-gcc
-android_arm=arm-linux-androideabi-gcc
-
-# initialize the various hash tables
-for o in $oslist;  do oses[$o]=$o; done
-for o in $needcgo; do cgo[$o]=$o;  done
-for c in $cpulist; do
-    cpus[$c]=$c
-    a="cpualias_$c"
-    a=${!a}
-    for x in $a; do cpus[$x]=$c; done
-done
-
-
-doinit=0
 args=
 
 #set -x
@@ -430,17 +450,6 @@ do
   case "$ac_option" in
         --help|-h|--hel|--he|--h)
             usage;
-            ;;
-
-        --init)
-            doinit=1
-            ;;
-
-        --arch=*)
-            Arch=$ac_optarg
-            ;;
-        -a|--arch)
-            ac_prev=Arch
             ;;
 
         --dry-run)
@@ -471,77 +480,31 @@ do
   esac
 done
 
-if [ $doinit -gt 0 ]; then
-    # Setup repo structure
-
-    [ -d $PWD/src ]        || mkdir -p $PWD/src
-    [ -d $PWD/vendor/src ] || mkdir -p $PWD/vendor/src
-
-    touch vendor/manifest.txt
-    ign=$PWD/.gitignore
-
-    [ -f $ign ] || touch $ign
-    if ! grep -q vendor/src $ign; then
-        cat >> $ign <<EOFx
-
-# gg vendor management
-vendor/src/*
-vendor/pkg/*
-EOFx
-    fi
-
-    gitx add vendor/manifest.txt .gitignore
-    exit 0
-fi
 
 [ $Dryrun  -gt 0 ] && e=echo
 [ $Verbose -gt 0 ] && Gitquiet=
 [ $Debug   -gt 0 ] && set -x
 
 
-set -- $args
-cmd=$1; shift
-[ -z "$cmd" ] && die "Insufficient arguments.. Try '$0 --help'"
-
-if [ -n "$Arch" ]; then
-    os=${Arch%%-*}
-    cpu=${Arch##*-}
-    [ "$os" = "$cpu" ] && cpu=$(go env GOHOSTARCH)
-
-    o=${oses[$os]}
-    c=${cpus[$cpu]}
-    [ -z "$o" ] && die "Don't know anything about OS $os"
-    [ -z "$c" ] && die "Don't know anything about CPU $cpu"
-
-    export GOOS=$os GOARCH=$c
-    if [ -n "${cgo[$os]}" ]; then
-        export CGO_ENABLED=1
-
-        # See if we have a specific cross-compiler for this CPU+OS combo
-        xcc="${GOOS}_${GOARCH}"
-        xcc=${!xcc}
-        if [ -n "$xcc" ]; then
-            p=`type -p $xcc`
-            [ -n "$p" ] || die "Can't find $xcc! Do you have compilers for $GOARCH available in PATH?"
-            export CC=$xcc
-        else
-            echo "$Z: No Cross compiler defined for $GOOS-$GOARCH. Build may fail.." 1>&2
-        fi
-    fi
-fi
-
-
 vendor=$PWD/vendor
 export GOPATH=$vendor:$PWD
-[ -f $vendor/manifest.txt ] || touch $vendor/manifest.txt
+#[ -f $vendor/manifest.txt ] || touch $vendor/manifest.txt
 
+set -- $args
+cmd=$1; shift
 case $cmd in
+
+    init)
+        init_repo
+        exit 0
+        ;;
 
     fetch|get)
         repo=$1
+        tag=$2
         [ -n "$repo" ] || die "missing repo name for fetch"
 
-        fetch $vendor $repo
+        fetch $vendor $repo $tag
         ;;
 
     update)
@@ -559,19 +522,15 @@ case $cmd in
         rebuild_manifest $vendor
         ;;
 
-    sync)
+    sync|ensure)
         sync_all $vendor
         ;;
 
-    list)
+    list|status)
         list_all $vendor
         ;;
 
-    upgrade)
-        upgrade_old $vendor
-        ;;
-
     *)  # We just pass it off to go..
-        $e eval exec go $cmd "$@"
+        die "Unknown command '$cmd'. Try '$Z --help'"
         ;;
 esac

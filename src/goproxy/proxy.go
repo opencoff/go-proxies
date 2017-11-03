@@ -20,6 +20,7 @@ import (
     "net/http"
 
 	L "github.com/opencoff/go-lib/logger"
+	"github.com/opencoff/go-lib/ratelimit"
 )
 
 
@@ -31,6 +32,8 @@ type HTTPProxy struct {
 
     stop  chan bool
     wg    sync.WaitGroup
+
+    rl   *ratelimit.Ratelimiter
 
     // logger
     log     *L.Logger
@@ -64,9 +67,12 @@ func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
             MaxHeaderBytes: 1 << 20,
         }
 
+    // Conf file specifies ratelimit as N conns/sec
+    rl, err := ratelimit.New(lc.Ratelimit, 1)
 
     p.TCPListener = ln
     p.srv = s
+    p.rl  = rl
     p.tr  = &http.Transport{}
 
     log.Info("HTTP listening on %s ..", lc.Listen)
@@ -128,7 +134,7 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
     t1 := time.Now()
 
-    copyHeaders(w.Header(), resp.Header)
+    copyRespHeaders(w.Header(), resp.Header)
     w.WriteHeader(resp.StatusCode)
     nr, _ := io.Copy(w, resp.Body)
     resp.Body.Close()
@@ -138,13 +144,8 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     p.log.Debug("%s: %d %d %s %s\n", r.Host, resp.StatusCode, nr, t2.Sub(t0), r.URL.String())
     // Timing log
     if p.ulog != nil {
-        d0 := "-"
-        d1 := "-"
-
-        if resp.StatusCode == 200 {
-            d0 = format(t1.Sub(t0))
-            d1 = format(t2.Sub(t1))
-        }
+        d0 := format(t1.Sub(t0))
+        d1 := format(t2.Sub(t1))
 
         now := time.Now().UTC().Format(time.RFC3339)
 
@@ -191,7 +192,7 @@ func scrubReq(r *http.Request) {
 }
 
 // First delete the old headers and add the new ones
-func copyHeaders(d, s http.Header) {
+func copyRespHeaders(d, s http.Header) {
     // XXX Do we delete all _existing_ headers or only the ones that
     // are in 's' ?
     for k, _ := range s { d.Del(k) }
@@ -201,8 +202,6 @@ func copyHeaders(d, s http.Header) {
             d.Add(k, v)
         }
     }
-
-    // XXX do we add X-Forwarded-For?
 }
 
 
@@ -271,9 +270,15 @@ func (p *HTTPProxy) iocopy(d, s *net.TCPConn) {
     s.CloseRead()
 }
 
-// Accept() handler for http.Serve
+// Accept() new socket connections from the listener
+// Note:
+//   - HTTPProxy is also a TCPListener
+//   - http.Server.Serve() is passed a Listener object (p)
+//   - And, Serve() calls Accept() before starting service
+//     go-routines
 func (p *HTTPProxy) Accept() (net.Conn, error) {
     ln := p.TCPListener
+    la := ln.Addr().String()
     for {
         ln.SetDeadline(time.Now().Add(2 * time.Second))
 
@@ -298,9 +303,14 @@ func (p *HTTPProxy) Accept() (net.Conn, error) {
             return nil, err
         }
 
+        if p.rl.Limit() {
+            p.log.Debug("%s: Ratelimited: %s", la, nc.RemoteAddr().String())
+            nc.Close()
+            continue
+        }
+
         if !AclOK(p.conf, nc) {
-            // XXX Log?
-            p.log.Debug("ACL failure: %s", nc.RemoteAddr().String())
+            p.log.Debug("%s: ACL failure: %s", la, nc.RemoteAddr().String())
             nc.Close()
             continue
         }
