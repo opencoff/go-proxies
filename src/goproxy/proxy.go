@@ -33,7 +33,8 @@ type HTTPProxy struct {
     stop  chan bool
     wg    sync.WaitGroup
 
-    rl   *ratelimit.Ratelimiter
+    grl      *ratelimit.Ratelimiter
+    prl      *ratelimit.PerIPRatelimiter
 
     // logger
     log     *L.Logger
@@ -58,8 +59,19 @@ func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
         die("Can't listen on %s: %s", addr, err)
     }
 
+    log = log.New("http-" + ln.Addr().String(), 0)
+
+    d := &net.Dialer{Timeout: 5 * time.Second,
+                    KeepAlive: 10 * time.Second,
+                }
     p := &HTTPProxy{conf: lc, log: log, ulog: ulog, stop: make(chan bool)}
-    s := &http.Server{
+
+    // Conf file specifies ratelimit as N conns/sec
+    p.grl, _ = ratelimit.New(lc.Ratelimit.Global, 1)
+    p.prl, _ = ratelimit.NewPerIPRatelimiter(lc.Ratelimit.PerHost, 1)
+
+    p.TCPListener = ln
+    p.srv = &http.Server{
             Addr: addr,
             Handler: p,
             ReadTimeout: 5 * time.Second,
@@ -67,15 +79,12 @@ func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
             MaxHeaderBytes: 1 << 20,
         }
 
-    // Conf file specifies ratelimit as N conns/sec
-    rl, err := ratelimit.New(lc.Ratelimit, 1)
+    p.tr  = &http.Transport{Dial: d.Dial,
+                TLSHandshakeTimeout: 8 * time.Second,
+                MaxIdleConnsPerHost: 32,
+                IdleConnTimeout: 60 * time.Second,
+            }
 
-    p.TCPListener = ln
-    p.srv = s
-    p.rl  = rl
-    p.tr  = &http.Transport{}
-
-    log.Info("HTTP listening on %s ..", lc.Listen)
     return p, nil
 }
 
@@ -86,7 +95,7 @@ func (p *HTTPProxy) Start() {
     p.wg.Add(1)
     go func() {
         defer p.wg.Done()
-        p.log.Info("Starting HTTP proxy on %s ..", p.conf.Listen)
+        p.log.Info("Starting HTTP proxy ..")
         p.srv.Serve(p)
     }()
 }
@@ -102,7 +111,7 @@ func (p *HTTPProxy) Stop() {
     p.srv.Shutdown(cx)
 
     p.wg.Wait()
-    p.log.Info("HTTP proxy on %s shutdown", p.conf.Listen)
+    p.log.Info("HTTP proxy shutdown")
 }
 
 
@@ -278,7 +287,6 @@ func (p *HTTPProxy) iocopy(d, s *net.TCPConn) {
 //     go-routines
 func (p *HTTPProxy) Accept() (net.Conn, error) {
     ln := p.TCPListener
-    la := ln.Addr().String()
     for {
         ln.SetDeadline(time.Now().Add(2 * time.Second))
 
@@ -303,14 +311,20 @@ func (p *HTTPProxy) Accept() (net.Conn, error) {
             return nil, err
         }
 
-        if p.rl.Limit() {
-            p.log.Debug("%s: Ratelimited: %s", la, nc.RemoteAddr().String())
+        if p.grl.Limit() {
             nc.Close()
+            p.log.Debug("%s: globally ratelimited", nc.RemoteAddr().String())
+            continue
+        }
+
+        if p.prl.Limit(nc.RemoteAddr()) {
+            nc.Close()
+            p.log.Debug("%s: per-IP ratelimited", nc.RemoteAddr().String())
             continue
         }
 
         if !AclOK(p.conf, nc) {
-            p.log.Debug("%s: ACL failure: %s", la, nc.RemoteAddr().String())
+            p.log.Debug("%s: ACL failure", nc.RemoteAddr().String())
             nc.Close()
             continue
         }

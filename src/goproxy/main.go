@@ -57,8 +57,13 @@ type ListenConf struct {
 	Allow		[]subnet	`yaml:"allow"`
 	Deny		[]subnet	`yaml:"deny"`
 
-	// Global rate limit
-	Ratelimit	int   		`yaml:"ratelimit"`
+	// rate limit -- perhost and global
+	Ratelimit	RateLimit	`yaml:"ratelimit"`
+}
+
+type RateLimit struct {
+	Global		int			`yaml:"global"`
+	PerHost		int			`yaml:"perhost"`
 }
 
 
