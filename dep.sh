@@ -1,19 +1,10 @@
 #! /usr/bin/env bash
 
-# Useful script to build go programs and manage vendor dependencies.
-# It wraps the 'go' tool and augments its command vocabulary.
+# Shell implementation of a simple golang vendor management tool.
+# Tries to implement same commands as "dep"; this existed before dep
+# was talked about.
 #
-# This script knows how to cross-compile for various architectures
-# without resorting to environment vars.
-#
-# In particular, this script supports:
-#   o Cross compiling for Android  with the NDK toolchain
-#   o Cross compiling for other OSes
-#   o Vendor branch support (Go 1.5+)
-#
-# Cross compiling for Android requires the following magic:
-#   o CGO_ENABLED=1
-#   o CC=$NDK_CC
+# CAVEAT: It only knows how to handle git upstream vendors.
 #
 # (c) 2016 Sudhi Herle <sudhi-at-herle-net>
 # License: GPLv2
@@ -72,8 +63,7 @@ $Z - An simple golang vendor dependency management tool.
 
 Usage: $Z [options] COMMAND [command-options]
 
-In addition to the standard set of go commands, we support the
-following additional commands:
+$Z knows the following commands:
 
 init
     Initialize the current directory with necessary bits for vendor
@@ -105,11 +95,17 @@ rebuild
 status, list
     Show a list of vendored and pinned repositories.
 
+help
+    Show this help message and quit.
+
 The remote repositories are recorded in 'vendor/manifest.txt'.
+
+NB: $Z only knows to handle upstream git vendor repositories.
 
 Global options:
 ---------------
 --help, -h      Show this help message and quit
+--verbose, -v   Run in verbose mode [False]
 --dry-run       Run in dry-run mode (do not modify disk) [False]
 --no-git, -N    Don't run any 'git add' commands [False]
 --debug, -x     Run the tool in "debug mode" [False]
@@ -480,7 +476,7 @@ do
   esac
 done
 
-
+[ -d $PWD/.git      ] || Nogit=1
 [ $Dryrun  -gt 0 ] && e=echo
 [ $Verbose -gt 0 ] && Gitquiet=
 [ $Debug   -gt 0 ] && set -x
@@ -488,7 +484,6 @@ done
 
 vendor=$PWD/vendor
 export GOPATH=$vendor:$PWD
-#[ -f $vendor/manifest.txt ] || touch $vendor/manifest.txt
 
 set -- $args
 cmd=$1; shift
@@ -528,6 +523,10 @@ case $cmd in
 
     list|status)
         list_all $vendor
+        ;;
+
+    help)
+        usage
         ;;
 
     *)  # We just pass it off to go..

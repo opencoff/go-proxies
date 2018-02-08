@@ -1,4 +1,4 @@
-// proxy.go -- http proxy server logic
+// socksplain.go -- plain socksv5 support
 //
 // Author: Sudhi Herle <sudhi@herle.net>
 //
@@ -11,20 +11,18 @@ package main
 import (
 	//"io"
 	//"fmt"
-	"context"
+	//"context"
 	"net"
 	"sync"
 	"time"
-	//"strings"
-	//"net/url"
-	"net/http"
 
-	"lib/httproxy"
+	//"lib/socks5"
 
 	L "github.com/opencoff/go-lib/logger"
 	"github.com/opencoff/go-lib/ratelimit"
 )
 
+/*
 // XXX These should be in a config file
 const dialerTimeout = 30	   // seconds
 const dialerKeepAlive = 30	   // seconds
@@ -37,8 +35,9 @@ const perHostIdleConn = 1024   // XXX too big?
 const idleConnTimeout = 120    // seconds
 
 const defaultIOSize = 8192		// bytes
+*/
 
-type HTTPProxy struct {
+type SocksProxy struct {
 	*net.TCPListener
 
 	// listen address
@@ -54,13 +53,9 @@ type HTTPProxy struct {
 	log  *L.Logger
 	ulog *L.Logger
 
-	// Transport for downstream connection
-	tr *http.Transport
-
-	srv *http.Server
 }
 
-func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
+func NewSocksProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 	addr := lc.Listen
 	la, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
@@ -75,7 +70,7 @@ func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 	// create a sub-logger with the listener's prefix.
 	log = log.New(ln.Addr().String(), 0)
 
-	p := &HTTPProxy{conf: lc, log: log, ulog: ulog, stop: make(chan bool)}
+	p := &SocksProxy{conf: lc, log: log, ulog: ulog, stop: make(chan bool)}
 
 	// Conf file specifies ratelimit as N conns/sec
 	rl, err := ratelimit.New(lc.Ratelimit.Global, 1)
@@ -88,6 +83,7 @@ func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 		die("%s: Can't create per-host ratelimiter: %s", addr, err)
 	}
 
+	/*
 	dialer := &net.Dialer{Timeout: dialerTimeout * time.Second,
 		KeepAlive: dialerKeepAlive * time.Second,
 	}
@@ -116,8 +112,9 @@ func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 		MaxHeaderBytes:    1 << 20, // 1 MB. Sufficient?
 		ErrorLog:		   stdlog,
 	}
-	p.TCPListener = ln
 	p.srv = s
+	*/
+	p.TCPListener = ln
 	p.grl = rl
 	p.prl = pl
 
@@ -125,7 +122,7 @@ func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 }
 
 // Start listener
-func (p *HTTPProxy) Start() {
+func (p *SocksProxy) Start() {
 
 	p.wg.Add(1)
 	go func() {
@@ -140,17 +137,17 @@ func (p *HTTPProxy) Start() {
 		// This calls our over-ridden "Accept()" method. Finally, it
 		// will call srv.Handler.ServeHTTP() -- ie, the reverse
 		// proxy implementation.
-		p.srv.Serve(p)
+		//p.srv.Serve(p)
 	}()
 }
 
 // Stop server
 // XXX Hijacked Websocket conns are not shutdown here
-func (p *HTTPProxy) Stop() {
+func (p *SocksProxy) Stop() {
 	close(p.stop)
 
-	cx, _ := context.WithTimeout(context.Background(), 10*time.Second)
-	p.srv.Shutdown(cx)
+	//cx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+	//p.srv.Shutdown(cx)
 
 	p.wg.Wait()
 	p.log.Info("authproxy shutdown")
@@ -158,11 +155,11 @@ func (p *HTTPProxy) Stop() {
 
 // Accept() new socket connections from the listener
 // Note:
-//	 - HTTPProxy is also a TCPListener
+//	 - SocksProxy is also a TCPListener
 //	 - http.Server.Serve() is passed a Listener object (p)
 //	 - And, Serve() calls Accept() before starting service
 //	   go-routines
-func (p *HTTPProxy) Accept() (net.Conn, error) {
+func (p *SocksProxy) Accept() (net.Conn, error) {
 	ln := p.TCPListener
 	for {
 		ln.SetDeadline(time.Now().Add(2 * time.Second))
@@ -212,56 +209,6 @@ func (p *HTTPProxy) Accept() (net.Conn, error) {
 	}
 }
 
-// Authentication and req modification callback from the proxy core
-func (p *HTTPProxy) proxyURL(r *http.Request) (int, error) {
 
-	// golang parses the requestURI and populates:
-	// - r.RequestURI
-	// - r.Host: This is either the host in the URL or the HTTP Header.
-	// - r.URL.Path
-	// - r.URL.RawQuery
-
-	// Dialer needs a valid URL.Host;
-	r.URL.Host = r.Host
-
-	return http.StatusOK, nil
-}
-
-var errShutdown = proxyErr{Err: "server shutdown", temp: false}
-
-type proxyErr struct {
-	error
-	Err  string
-	temp bool // is temporary error?
-}
-
-// net.Error interface implementation
-func (e *proxyErr) String() string	{ return e.Err }
-func (e *proxyErr) Temporary() bool { return e.temp }
-func (e *proxyErr) Timeout() bool	{ return false }
-
-// simple buffer pool
-type bufPool struct {
-	p sync.Pool
-}
-
-func newBufPool(siz int) httproxy.BufferPool {
-	b := &bufPool{
-			p: sync.Pool{
-				New: func() interface{} {
-					return make([]byte, siz)
-				},
-			},
-	}
-	return b
-}
-
-func (b *bufPool) Get() []byte {
-	return b.p.Get().([]byte)
-}
-
-func (b *bufPool) Put(z []byte) {
-	b.p.Put(z)
-}
 
 // vim: noexpandtab:

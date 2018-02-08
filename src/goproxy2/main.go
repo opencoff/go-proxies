@@ -57,8 +57,13 @@ type ListenConf struct {
 	Allow		[]subnet	`yaml:"allow"`
 	Deny		[]subnet	`yaml:"deny"`
 
-	// Global rate limit
-	Ratelimit	int   		`yaml:"ratelimit"`
+	// Global and Per-Host rate limit
+	Ratelimit	RateLimit	`yaml:"ratelimit"`
+}
+
+type RateLimit struct {
+	Global		int			`yaml:"global"`
+	PerHost		int			`yaml:"perhost"`
 }
 
 
@@ -199,7 +204,7 @@ func main() {
 		if len(v.Listen) == 0 {
 			die("SOCKSv5 listen address is empty?")
 		}
-		s, err := NewSocksv5Proxy(&v, log, ulog)
+		s, err := NewSocksProxy(&v, log, ulog)
 		if err != nil {
 			die("Can't create socks listener on %s: %s", v, err)
 		}
