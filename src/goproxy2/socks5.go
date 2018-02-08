@@ -21,6 +21,315 @@ import (
     "github.com/opencoff/go-lib/ratelimit"
 )
 
+
+
+
+type Proxy struct {
+    Dialer  *net.Dialer
+
+    // How frequently do we shove bytes forcibly down the pipe?
+    FlushInterval time.Duration
+
+    // If absent, client is denied server connection
+    Authenticate    func(cl *Client) (int, error)
+
+    // if present, checks to see if remote connect should be allowed
+    // default is to assume that the connection is allowed.
+    AllowConnect    func(client net.Addr, remote net.Addr) bool
+
+    // Error log
+    ErrorLog    *stdlog.Logger
+
+    // Optional: bind-to address for outgoing connections
+    Bind        net.Addr
+
+    // XXX Timeouts
+}
+
+// The incoming client and their credentials
+type Client struct {
+    AuthType    int // 0: none, 1: GSSAPI, 2: username/passwd, rest: reserved
+
+    User        string  // username
+    Passwd      string  // password
+
+    Client      net.Addr    // client address
+    Server      net.Addr    // server address
+}
+
+
+type Request struct {
+    Type        RequestType // Enum
+    Network     string      // tcp, udp
+    Addr        net.Addr    // destination addr or bin
+}
+
+
+const (
+    ReqConnect  = 1,
+    ReqBind = 2,
+    ReqAssociate = 3,
+)
+
+// request response status
+const (
+    StatusOK = iota,
+    StatusServerFailure,
+    StatusConnNotAllowed,
+    StatusNetUnreachable,
+    StatusHostUnreachable,
+    StatusConnRefused,
+    StatusTTLExpired,
+    StatusUnsupportedCommand,
+    StatusUnsupportedAddressType,
+)
+
+// Well known timeouts
+type Timeouts struct {
+
+    // timeout for receiving auth methods request
+    AuthTimeout     time.Duration
+
+    // timeout for receiving connect request
+    RequestTimeout  time.Duration
+
+    // body I/O deadlines
+    ReadTimeout     time.Duration
+    WriteTimeout    time.Duration
+}
+
+type Server struct {
+
+    // internal objs that make up a server
+    pr  *Proxy
+
+    to  Timeouts
+
+    listeners   map[net.Listener]bool
+    conn        map[*conn]bool
+
+    // private fields
+    done    chan bool
+}
+
+// initialize server 's' to work with Proxy 'p'
+func NewServer(p *Proxy, to *Timeouts) (*Server, error) {
+    s = &Server{
+            pr: p,
+            to: *to,
+            done: make(chan bool),
+            listeners: make(map[net.Listener]bool),
+            conns: make(map[*conn]bool),
+        }
+
+
+    return s, nil
+}
+
+// We only provide one.
+func (s *Server) Serve(ln net.Listener) error {
+
+    defer ln.Close()
+
+    var errDelay time.Duration   = 2500 * time.Microsecond
+    const maxDelay time.Duration = 1 * time.Second
+
+    ctx := context.Background()
+    ctx  = context.WithValue(ctx, "socks5-server", s)
+
+    s.addListener(ln)
+    defer s.rmListener(ln)
+
+    for {
+        nc, e := ln.Accept()
+        if e == nil {
+            errDelay = 2500 * time.Microsecond
+
+            c := s.newConn(nc)
+
+            go c.serve(ctx)
+            continue
+        }
+
+        select {
+        case <-s.done:
+            return ErrServerClosed
+        default:
+        }
+
+        // temporary failures, exponential backoff
+        if ne, ok := e.(net.Error); ok && ne.Temporary() {
+            errDelay *= 2
+            if errDelay > maxDelay {
+                errDelay = maxDelay
+            }
+            s.log("socks5-server: temporary accept() error: %v; retrying in %v", e, errDelay)
+            time.Sleep(errDelay)
+            continue
+        }
+
+        // All other errors are sent back to caller
+        return e
+    }
+}
+
+
+
+// Gracefully shutdown the server
+func (s *Server) Shutdown(ctx context.Context) error {
+    // 1. close active listeners
+    // 2. close done chan
+    // 3. wait for active conns to be closed
+
+    s.mu.Lock()
+    s.rmListenersAndCloseLocked()
+    close(s.done)
+    s.closeActiveConn()
+
+    s.mu.Unlock()
+
+    for {
+        // XXX How long to wait for active conns to go away?
+        // how will I know
+
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+
+        // XXX ??
+        }
+    }
+
+}
+
+
+func (s *Server) addListener(ln net.Listener) {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+
+    s.listeners[ln] = true
+}
+
+
+// Only untrack the given listener. don't close it! The caller
+func (s *Server) rmListener(ln net.Listener) {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+
+    delete(s.listeners, ln)
+}
+
+// remove and close all listeners
+func (s *Server) rmListenersAndCloseLocked() {
+    for ln := range s.listeners {
+        delete(s.listeners, ln)
+        ln.Close()
+    }
+}
+
+
+
+func (s *Server) rmConn(nc net.Conn) {
+    s.mu.Lock()
+    delete(s.conns, nc)
+    s.mu.Unlock()
+    nc.Close()
+}
+
+// close all active connections
+func (s *Server) closeActiveConnLocked() {
+}
+
+
+func (s *Server) newConn(nc net.Conn) *conn {
+    c := &conn{
+        srv: s,
+        c: nc,
+        car: nc.RemoteAddr(),
+        cal: nc.LocalAddr(),
+    }
+
+    s.mu.Lock()
+    s.conns[c] = true
+    s.mu.Unlock()
+
+    return c
+}
+
+
+type conn struct {
+    srv     *Server
+    c       net.Conn
+
+    car      net.Addr       // client addr remote 
+    cal      net.Addr       // client add local; i.e., the server's listening addr
+
+
+    // XXX Do we need a chan to unblock the go-routine?
+}
+
+// started as a go-routine in Server:Serve()
+func (c *conn) serve(ctx context.Context) {
+
+    // XXX do we catch/recover a panic from deep in the call chain
+    //     below?
+
+
+    defer c.close()
+
+    // XXX read the header, auth and do the thing.
+
+    // XXX Dial remote using the supplied dialer
+
+    // XXX defer close the remote end as well
+
+    cpctx, cancel := context.WithCancel(ctx)
+    defer cancel()
+
+    // Finally, create a buffered io-copier like the http-proxy.
+    // pass cpctx to them - so they know if they are cancelled
+    var wg sync.WaitGroup
+
+    wg.Add(2)
+
+    // XXX go routines spun up here
+
+    // wait for both go-routines to end and then  close 'ch'
+    cpdone := make(chan bool)
+    go func(ch chan bool) {
+        wg.Wait()
+        close(ch)
+    }(cpdone)
+
+    // wait for go-routines to finish or we are asked to shutdown
+    for {
+        select {
+            case <-c.done:
+                cancel()    // this should kill the copy go-routines
+
+            case <-cpdone:
+                // we are done serving.
+                return
+            default:
+        }
+    }
+}
+
+
+func (c *conn) close() {
+    c.srv.rmConn(c.c)
+
+    // XXX logging?
+}
+
+
+
+
+
+
+
+
+
 // SOCKSv5 methods
 type Methods struct {
     ver, nmethods uint8
