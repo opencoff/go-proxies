@@ -40,7 +40,8 @@ type socksProxy struct {
 
     stop  chan bool
     wg    sync.WaitGroup
-    rl      *ratelimit.Ratelimiter
+    grl      *ratelimit.Ratelimiter
+    prl      *ratelimit.PerIPRatelimiter
 }
 
 
@@ -67,15 +68,17 @@ func NewSocksv5Proxy(cfg *ListenConf, log, ulog *L.Logger) (px *socksProxy, err 
         }
     }
 
+    log = log.New("socks-" + ln.Addr().String(), 0)
+
     px = &socksProxy{bind: addr, log: log, ulog: ulog,  cfg: cfg}
 
     px.TCPListener = ln
     px.stop = make(chan bool)
 
-    rl, err := ratelimit.New(cfg.Ratelimit, 1)
-    px.rl = rl
+    px.grl, _ = ratelimit.New(cfg.Ratelimit.Global, 1)
+    px.prl, _ = ratelimit.NewPerIPRatelimiter(cfg.Ratelimit.PerHost, 1)
 
-    log.Info("SOCKS listening on %s ..", cfg.Listen)
+
     return
 }
 
@@ -84,7 +87,7 @@ func (px *socksProxy) Start() {
     px.wg.Add(1)
     go func() {
         defer px.wg.Done()
-        px.log.Info("Starting SOCKS proxy on %s ..", px.cfg.Listen)
+        px.log.Info("Starting SOCKS proxy ..")
         px.accept()
     }()
 }
@@ -92,7 +95,7 @@ func (px *socksProxy) Start() {
 func (px *socksProxy) Stop() {
     close(px.stop)
     px.wg.Wait()
-    px.log.Info("SOCKS proxy on %s shutdown", px.cfg.Listen)
+    px.log.Info("SOCKS proxy shutdown")
 }
 
 
@@ -103,8 +106,6 @@ func (px *socksProxy) Stop() {
 func (px *socksProxy) accept() {
     ln   := px.TCPListener
     log  := px.log
-
-    la := ln.Addr().String()
     nerr := 0
 
     for {
@@ -125,7 +126,7 @@ func (px *socksProxy) accept() {
                 }
             }
 
-            log.Error("Failed to accept new connection on %s: %s", la, err)
+            log.Error("Failed to accept new connection: %s", err)
             nerr += 1
             if nerr > 5 {
                 log.Error("Too many consecutive accept failures! Aborting...")
@@ -134,10 +135,18 @@ func (px *socksProxy) accept() {
             continue
         }
 
+        rem := conn.RemoteAddr().String()
+
         // Ratelimit before anything else we do
-        if px.rl.Limit() {
-            log.Debug("%s: Ratelimited %s", la, conn.RemoteAddr().String())
+        if px.grl.Limit() {
             conn.Close()
+            log.Debug("global ratelimit reached: %s", rem)
+            continue
+        }
+
+        if px.prl.Limit(conn.RemoteAddr()) {
+            conn.Close()
+            log.Debug("per-host ratelimit reached: %s", rem)
             continue
         }
 
@@ -145,16 +154,14 @@ func (px *socksProxy) accept() {
         // Reset - as soon as things begin to work
         nerr = 0
 
-        rem := conn.RemoteAddr().String()
-
-        log.Debug("Accepted connection from %s", rem)
-
         // Check ACL
         if !AclOK(px.cfg, conn) {
             conn.Close()
             log.Debug("Denied %s due to ACL", rem)
             continue
         }
+
+        log.Debug("Accepted connection from %s", rem)
 
         // Fork off a handler for this new connection
         go px.Proxy(conn)
@@ -267,9 +274,10 @@ func (px *socksProxy) readMethods(conn net.Conn) (m Methods, err error) {
     m.nmethods = b[1]
 
     if n-2 < int(m.nmethods) {
-        px.log.Error("%s Insufficient data while reading methods: Saw %d, want %d\n",
-                   rem, n-2, m.nmethods)
-        err = errors.New("Insufficient data")
+        errs := fmt.Sprintf("%s: insufficient data while reading methods; exp %d bytes, saw %d",
+                            rem, m.nmethods, n-2)
+        px.log.Error(errs)
+        err = fmt.Errorf(errs)
     }
 
     //px.log.Debug("%s Methods: %d bytes [%d tot auth meth]\n%s\n", rem, n, int(m.nmethods),
