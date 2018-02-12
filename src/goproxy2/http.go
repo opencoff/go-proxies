@@ -1,6 +1,7 @@
 // proxy.go -- http proxy server logic
 //
 // Author: Sudhi Herle <sudhi@herle.net>
+// License: GPLv2
 //
 // This software does not come with any express or implied
 // warranty; it is provided "as is". No claim  is made to its
@@ -10,12 +11,12 @@ package main
 
 import (
 	//"io"
-	//"fmt"
+	"fmt"
 	"context"
 	"net"
 	"sync"
 	"time"
-	//"strings"
+	"strings"
 	//"net/url"
 	"net/http"
 
@@ -26,17 +27,16 @@ import (
 )
 
 // XXX These should be in a config file
-const dialerTimeout = 30	   // seconds
-const dialerKeepAlive = 30	   // seconds
-const tlsHandshakeTimeout = 30 // seconds
-const readTimeout = 20		   // seconds
-const readHeaderTimeout = 10   // seconds
-const writeTimeout = 60		   // seconds; 3x read timeout. Enough time?
-const flushInterval = 10	   // seconds
-const perHostIdleConn = 1024   // XXX too big?
-const idleConnTimeout = 120    // seconds
-
-const defaultIOSize = 8192		// bytes
+const dialerTimeout       = 30    // seconds
+const dialerKeepAlive     = 30    // seconds
+const tlsHandshakeTimeout = 30    // seconds
+const readTimeout         = 20    // seconds
+const readHeaderTimeout   = 10    // seconds
+const writeTimeout        = 60    // seconds; 3x read timeout. Enough time?
+const flushInterval       = 10    // seconds
+const perHostIdleConn     = 1024  // XXX too big?
+const idleConnTimeout     = 120   // seconds
+const defaultIOSize       = 8192  // bytes
 
 type HTTPProxy struct {
 	*net.TCPListener
@@ -45,7 +45,7 @@ type HTTPProxy struct {
 	conf *ListenConf
 
 	stop chan bool
-	wg	 sync.WaitGroup
+	wg   sync.WaitGroup
 
 	grl *ratelimit.Ratelimiter
 	prl *ratelimit.PerIPRatelimiter
@@ -54,114 +54,209 @@ type HTTPProxy struct {
 	log  *L.Logger
 	ulog *L.Logger
 
-	// Transport for downstream connection
+	dialer *net.Dialer
 	tr *http.Transport
-
 	srv *http.Server
+	rp  *httproxy.Proxy
 }
 
 func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
-	addr := lc.Listen
-	la, err := net.ResolveTCPAddr("tcp", addr)
-	if err != nil {
-		die("Can't resolve %s: %s", addr, err)
+	var err error
+
+	ln     := lc.Listen.TCPAddr
+	log     = log.New(ln.String(), 0)
+	stdlog := log.StdLogger()
+	addr   := lc.Listen.TCPAddr
+
+	p := &HTTPProxy{
+		conf:        lc,
+		log:         log,
+		ulog:        ulog,
+		stop:        make(chan bool),
 	}
 
-	ln, err := net.ListenTCP("tcp", la)
-	if err != nil {
-		die("Can't listen on %s: %s", addr, err)
-	}
-
-	// create a sub-logger with the listener's prefix.
-	log = log.New(ln.Addr().String(), 0)
-
-	p := &HTTPProxy{conf: lc, log: log, ulog: ulog, stop: make(chan bool)}
-
-	// Conf file specifies ratelimit as N conns/sec
-	rl, err := ratelimit.New(lc.Ratelimit.Global, 1)
+	p.grl, err = ratelimit.New(lc.Ratelimit.Global, 1)
 	if err != nil {
 		die("%s: Can't create global ratelimiter: %s", addr, err)
 	}
 
-	pl, err := ratelimit.NewPerIPRatelimiter(lc.Ratelimit.PerHost, 1)
+	p.prl, err = ratelimit.NewPerIPRatelimiter(lc.Ratelimit.PerHost, 1)
 	if err != nil {
 		die("%s: Can't create per-host ratelimiter: %s", addr, err)
 	}
 
-	dialer := &net.Dialer{Timeout: dialerTimeout * time.Second,
+	p.dialer = &net.Dialer{
+		Timeout:   dialerTimeout * time.Second,
 		KeepAlive: dialerKeepAlive * time.Second,
 	}
-	tr := &http.Transport{Dial: dialer.Dial,
+	if lc.Bind.TCPAddr != nil {
+		p.dialer.LocalAddr = lc.Bind.TCPAddr
+	}
+
+	p.tr = &http.Transport{
+		Dial:                p.dialer.Dial,
 		TLSHandshakeTimeout: tlsHandshakeTimeout * time.Second,
 		MaxIdleConnsPerHost: perHostIdleConn,
-		IdleConnTimeout:	 idleConnTimeout * time.Second,
+		IdleConnTimeout:     idleConnTimeout * time.Second,
+		DisableCompression:  true,
 	}
 
-	stdlog := log.StdLogger()
 
-	rp := &httproxy.Proxy{
-		Transport:	   tr,
+	p.rp = &httproxy.Proxy{
+		Transport:     p.tr,
 		FlushInterval: flushInterval * time.Second,
-		ErrorLog: stdlog,
-		BufferPool: newBufPool(defaultIOSize),
-		Director: p.proxyURL,
+		ErrorLog:      stdlog,
+		BufferPool:    newBufPool(defaultIOSize),
+		Director:      p.proxyURL,
 	}
 
-	s := &http.Server{
-		Addr:			   addr,
-		Handler:		   rp,
-		ReadTimeout:	   readTimeout * time.Second,
+	p.srv = &http.Server{
+		Addr:              addr.String(),
+		Handler:           p,
+		ReadTimeout:       readTimeout * time.Second,
 		ReadHeaderTimeout: readHeaderTimeout * time.Second,
-		WriteTimeout:	   writeTimeout * time.Second,
-		MaxHeaderBytes:    1 << 20, // 1 MB. Sufficient?
-		ErrorLog:		   stdlog,
+		WriteTimeout:      writeTimeout * time.Second,
+		MaxHeaderBytes:    1 << 20,
+		ErrorLog:          stdlog,
+		ConnState:         func(c net.Conn, s http.ConnState) {
+			switch s {
+			case http.StateNew:
+				// ++OpenConn
+			case http.StateHijacked:
+				// --OpenConn
+			case http.StateClosed:
+				// --OpenConn
+			}
+		},
 	}
-	p.TCPListener = ln
-	p.srv = s
-	p.grl = rl
-	p.prl = pl
 
 	return p, nil
 }
 
-// Start listener
 func (p *HTTPProxy) Start() {
+	ln, err := net.ListenTCP("tcp", p.conf.Listen.TCPAddr)
+	if err != nil {
+		die("Can't listen on %s: %s", p.conf.Listen.String(), err)
+	}
 
+	p.TCPListener = ln
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
 
 		lc := p.conf
 
-		p.log.Info("Starting authproxy ..")
+		p.log.Info("Starting http-proxy ..")
 		p.log.Info("Ratelimit: Global %d req/s, Per-host: %d req/s",
 			lc.Ratelimit.Global, lc.Ratelimit.PerHost)
 
-		// This calls our over-ridden "Accept()" method. Finally, it
-		// will call srv.Handler.ServeHTTP() -- ie, the reverse
-		// proxy implementation.
 		p.srv.Serve(p)
 	}()
 }
 
-// Stop server
-// XXX Hijacked Websocket conns are not shutdown here
 func (p *HTTPProxy) Stop() {
 	close(p.stop)
 
-	cx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+	cx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	p.srv.Shutdown(cx)
 
+	defer cancel()
+
 	p.wg.Wait()
-	p.log.Info("authproxy shutdown")
+	p.log.Info("http-proxy shutdown")
 }
 
-// Accept() new socket connections from the listener
-// Note:
+
+func (p *HTTPProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	// XXX Add a health-check URL?
+	if upg := headerGet(req.Header, "Upgrade"); strings.ToLower(upg) == "websocket" {
+		err := p.serveWebSocket(rw, req)
+		if err != nil {
+			p.log.Warn("can't serve websocket: %s", err)
+			http.Error(rw, "can't serve websocket", http.StatusBadGateway)
+		}
+		return
+	}
+
+	p.rp.ServeHTTP(rw, req)
+}
+
+
+func (p *HTTPProxy) serveWebSocket(rw http.ResponseWriter, req *http.Request) error {
+	req.URL.Host = req.Host
+
+	ctx := req.Context()
+	dconn, err := p.dialer.DialContext(ctx, "tcp", req.Host)
+	if err != nil {
+		return fmt.Errorf("can't dial websocket to %s: %v", req.Host, err)
+	}
+	defer dconn.Close()
+
+	hj, ok := rw.(http.Hijacker)
+	if !ok {
+		return fmt.Errorf("not a hijacker")
+	}
+
+	cconn, buf, err := hj.Hijack()
+	if err != nil {
+		return fmt.Errorf("can't hijack: %v", err)
+	}
+	defer cconn.Close()
+
+	if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+		if prior, ok := req.Header["X-Forwarded-For"]; ok {
+			clientIP = strings.Join(prior, ", ") + ", " + clientIP
+		}
+		req.Header.Set("X-Forwarded-For", clientIP)
+	}
+
+	err = req.Write(dconn)
+	if err != nil {
+		return err
+	}
+
+	nctx, cancel := context.WithCancel(ctx)
+
+	buf.WriteTo(dconn)
+	b0 := p.rp.BufferPool.Get()
+	b1 := p.rp.BufferPool.Get()
+
+	defer p.rp.BufferPool.Put(b0)
+	defer p.rp.BufferPool.Put(b1)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	d := dconn.(*net.TCPConn)
+	s := cconn.(*net.TCPConn)
+
+	go func() {
+		defer wg.Done()
+		CancellableCopy(nctx, d, s, b0)
+	}()
+
+	go func() {
+		defer wg.Done()
+		CancellableCopy(nctx, s, d, b1)
+	}()
+
+	select {
+	case <-p.stop:
+		cancel()
+	case <-ctx.Done():
+		cancel()
+	}
+
+	wg.Wait()
+	return nil
+}
+
+
+// Notes:
 //	 - HTTPProxy is also a TCPListener
 //	 - http.Server.Serve() is passed a Listener object (p)
 //	 - And, Serve() calls Accept() before starting service
-//	   go-routines
+//	 - Serve() eventually calls our ServeHTTP() above.
 func (p *HTTPProxy) Accept() (net.Conn, error) {
 	ln := p.TCPListener
 	for {
@@ -174,7 +269,7 @@ func (p *HTTPProxy) Accept() (net.Conn, error) {
 			if err == nil {
 				nc.Close()
 			}
-			return nil, &errShutdown
+			return nil, errShutdown
 
 		default:
 		}
@@ -227,41 +322,14 @@ func (p *HTTPProxy) proxyURL(r *http.Request) (int, error) {
 	return http.StatusOK, nil
 }
 
-var errShutdown = proxyErr{Err: "server shutdown", temp: false}
 
-type proxyErr struct {
-	error
-	Err  string
-	temp bool // is temporary error?
-}
-
-// net.Error interface implementation
-func (e *proxyErr) String() string	{ return e.Err }
-func (e *proxyErr) Temporary() bool { return e.temp }
-func (e *proxyErr) Timeout() bool	{ return false }
-
-// simple buffer pool
-type bufPool struct {
-	p sync.Pool
-}
-
-func newBufPool(siz int) httproxy.BufferPool {
-	b := &bufPool{
-			p: sync.Pool{
-				New: func() interface{} {
-					return make([]byte, siz)
-				},
-			},
+func headerGet(h http.Header, k string) string {
+	if v, ok := h[k]; ok {
+		if len(v) > 0 {
+			return v[0]
+		}
 	}
-	return b
+	return ""
 }
 
-func (b *bufPool) Get() []byte {
-	return b.p.Get().([]byte)
-}
-
-func (b *bufPool) Put(z []byte) {
-	b.p.Put(z)
-}
-
-// vim: noexpandtab:
+// vim: noexpandtab:sw=8:ts=8:

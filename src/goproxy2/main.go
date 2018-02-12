@@ -1,6 +1,7 @@
 // main.go -- main() for http proxy & socks5 proxy
 //
 // Author: Sudhi Herle <sudhi@herle.net>
+// License: GPLv2
 //
 // This software does not come with any express or implied
 // warranty; it is provided "as is". No claim  is made to its
@@ -9,26 +10,23 @@
 package main
 
 import (
-	"os"
 	"fmt"
-	"net"
-	"time"
+	"os"
+	"os/signal"
 	"runtime"
+	"runtime/pprof"
 	"strings"
 	"syscall"
-	"io/ioutil"
-	"os/signal"
-	"runtime/pprof"
+	"time"
 
 	flag "github.com/ogier/pflag"
-	yaml "gopkg.in/yaml.v2"
 
 	L "github.com/opencoff/go-lib/logger"
 )
 
 // This will be filled in by "build"
-var RepoVersion string	  = "UNDEFINED"
-var Buildtime   string	  = "UNDEFINED"
+var RepoVersion string = "UNDEFINED"
+var Buildtime string = "UNDEFINED"
 var ProductVersion string = "UNDEFINED"
 
 // Number of minutes of profile data to capture
@@ -41,70 +39,6 @@ type Proxy interface {
 	Stop()
 }
 
-
-// List of config entries
-type Conf struct {
-	Logging          string         `yaml:"log"`
-	LogLevel         string         `yaml:"loglevel"`
-	URLlog			 string			`yaml:"urllog"`
-	Http  			[]ListenConf
-	Socks 			[]ListenConf
-}
-
-type ListenConf struct {
-	Listen		string		`yaml:"listen"`
-	Bind		string		`yaml:"bind"`
-	Allow		[]subnet	`yaml:"allow"`
-	Deny		[]subnet	`yaml:"deny"`
-
-	// Global and Per-Host rate limit
-	Ratelimit	RateLimit	`yaml:"ratelimit"`
-}
-
-type RateLimit struct {
-	Global		int			`yaml:"global"`
-	PerHost		int			`yaml:"perhost"`
-}
-
-
-// An IP/Subnet
-type subnet struct {
-    net.IPNet
-}
-
-// Custom unmarshaler for IPNet
-func (ipn *subnet) UnmarshalYAML(unm func(v interface{}) error) error  {
-    var s string
-
-    // First unpack the bytes as a string. We then parse the string
-    // as a CIDR
-	err := unm(&s)
-	if err != nil { return err }
-
-    _, net, err := net.ParseCIDR(s)
-    if err == nil {
-        ipn.IP   = net.IP
-        ipn.Mask = net.Mask
-    }
-    return err
-}
-
-
-// Parse config file in YAML format and return
-func ReadYAML(fn string) (*Conf, error) {
-	yml, err := ioutil.ReadFile(fn)
-	if err != nil {
-		return nil, fmt.Errorf("Can't read config file %s: %s", fn, err)
-	}
-
-	var cfg Conf
-	err = yaml.Unmarshal(yml, &cfg)
-	if err != nil {
-		return nil, fmt.Errorf("Can't parse config file %s: %s", fn, err)
-	}
-
-	return &cfg, nil
-}
 
 func main() {
 	// maxout concurrency
@@ -135,8 +69,7 @@ func main() {
 		die("No config file!\nUsage: %s", usage)
 	}
 
-
-	cfgfile  := args[0]
+	cfgfile := args[0]
 	cfg, err := ReadYAML(cfgfile)
 	if err != nil {
 		die("Can't read config file %s: %s", cfgfile, err)
@@ -170,17 +103,16 @@ func main() {
 		warn("Can't enable log rotation: %s", err)
 	}
 
-    var ulog *L.Logger
+	var ulog *L.Logger
 
-    if len(cfg.URLlog) > 0 {
-        ulog, err := L.NewFilelog(cfg.URLlog, L.LOG_INFO, "", 0)
-        if err != nil {
-            die("Can't create URL logger: %s", err)
-        }
+	if len(cfg.URLlog) > 0 {
+		ulog, err := L.NewFilelog(cfg.URLlog, L.LOG_INFO, "", 0)
+		if err != nil {
+			die("Can't create URL logger: %s", err)
+		}
 
-        ulog.EnableRotation(00, 00, 01, 01)
-    }
-
+		ulog.EnableRotation(00, 00, 01, 01)
+	}
 
 	log.Info("goproxy - %s [%s - built on %s] starting up (logging at %s)...",
 		ProductVersion, RepoVersion, Buildtime, L.PrioString[log.Prio()])
@@ -188,9 +120,10 @@ func main() {
 	var srv []Proxy
 
 	for _, v := range cfg.Http {
-		if len(v.Listen) == 0 {
-			die("http listen address is empty?")
-		}
+                if v.Listen.TCPAddr == nil {
+                        die("http: No listen address?")
+                }
+
 		s, err := NewHTTPProxy(&v, log, ulog)
 		if err != nil {
 			die("Can't create http listener on %s: %s", v, err)
@@ -201,12 +134,12 @@ func main() {
 	}
 
 	for _, v := range cfg.Socks {
-		if len(v.Listen) == 0 {
-			die("SOCKSv5 listen address is empty?")
-		}
+                if v.Listen.TCPAddr == nil {
+                        die("socks5: No listen address?")
+                }
 		s, err := NewSocksProxy(&v, log, ulog)
 		if err != nil {
-			die("Can't create socks listener on %s: %s", v, err)
+			die("Can't create socks5 listener on %s: %s", v, err)
 		}
 
 		srv = append(srv, s)
@@ -272,4 +205,4 @@ func initProfilers(log *L.Logger, dbdir string) {
 	})
 }
 
-// vim: ft=go:sw=4:ts=4:noexpandtab:tw=78:
+// vim: ft=go:sw=8:ts=8:expandtab:tw=88:

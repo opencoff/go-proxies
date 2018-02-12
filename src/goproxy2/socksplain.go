@@ -9,33 +9,17 @@
 package main
 
 import (
-	//"io"
-	//"fmt"
-	//"context"
+	"context"
 	"net"
 	"sync"
 	"time"
 
-	//"lib/socks5"
+	"lib/socks5"
 
 	L "github.com/opencoff/go-lib/logger"
 	"github.com/opencoff/go-lib/ratelimit"
 )
 
-/*
-// XXX These should be in a config file
-const dialerTimeout = 30	   // seconds
-const dialerKeepAlive = 30	   // seconds
-const tlsHandshakeTimeout = 30 // seconds
-const readTimeout = 20		   // seconds
-const readHeaderTimeout = 10   // seconds
-const writeTimeout = 60		   // seconds; 3x read timeout. Enough time?
-const flushInterval = 10	   // seconds
-const perHostIdleConn = 1024   // XXX too big?
-const idleConnTimeout = 120    // seconds
-
-const defaultIOSize = 8192		// bytes
-*/
 
 type SocksProxy struct {
 	*net.TCPListener
@@ -49,6 +33,8 @@ type SocksProxy struct {
 	grl *ratelimit.Ratelimiter
 	prl *ratelimit.PerIPRatelimiter
 
+	srv *socks5.Server
+
 	// logger
 	log  *L.Logger
 	ulog *L.Logger
@@ -56,67 +42,57 @@ type SocksProxy struct {
 }
 
 func NewSocksProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
-	addr := lc.Listen
-	la, err := net.ResolveTCPAddr("tcp", addr)
-	if err != nil {
-		die("Can't resolve %s: %s", addr, err)
+	var err error
+
+	ln     := lc.Listen.TCPAddr
+	log     = log.New(ln.String(), 0)
+	stdlog := log.StdLogger()
+	addr   := lc.Listen
+
+	p := &SocksProxy{
+		conf: lc,
+		log: log,
+		ulog: ulog,
+		stop: make(chan bool),
 	}
-
-	ln, err := net.ListenTCP("tcp", la)
-	if err != nil {
-		die("Can't listen on %s: %s", addr, err)
-	}
-
-	// create a sub-logger with the listener's prefix.
-	log = log.New(ln.Addr().String(), 0)
-
-	p := &SocksProxy{conf: lc, log: log, ulog: ulog, stop: make(chan bool)}
 
 	// Conf file specifies ratelimit as N conns/sec
-	rl, err := ratelimit.New(lc.Ratelimit.Global, 1)
+	p.grl, err = ratelimit.New(lc.Ratelimit.Global, 1)
 	if err != nil {
 		die("%s: Can't create global ratelimiter: %s", addr, err)
 	}
 
-	pl, err := ratelimit.NewPerIPRatelimiter(lc.Ratelimit.PerHost, 1)
+	p.prl, err = ratelimit.NewPerIPRatelimiter(lc.Ratelimit.PerHost, 1)
 	if err != nil {
 		die("%s: Can't create per-host ratelimiter: %s", addr, err)
 	}
 
-	/*
-	dialer := &net.Dialer{Timeout: dialerTimeout * time.Second,
+	dialer := &net.Dialer{
+		Timeout:   dialerTimeout * time.Second,
 		KeepAlive: dialerKeepAlive * time.Second,
 	}
-	tr := &http.Transport{Dial: dialer.Dial,
-		TLSHandshakeTimeout: tlsHandshakeTimeout * time.Second,
-		MaxIdleConnsPerHost: perHostIdleConn,
-		IdleConnTimeout:	 idleConnTimeout * time.Second,
+	if lc.Bind.TCPAddr != nil {
+		dialer.LocalAddr = lc.Bind.TCPAddr
 	}
 
-	stdlog := log.StdLogger()
 
-	rp := &httproxy.Proxy{
-		Transport:	   tr,
-		FlushInterval: flushInterval * time.Second,
+	prox := &socks5.Proxy{
+		Dialer: dialer,
+		FlushInterval: 30 * time.Second,
 		ErrorLog: stdlog,
-		BufferPool: newBufPool(defaultIOSize),
-		Director: p.proxyURL,
 	}
 
-	s := &http.Server{
-		Addr:			   addr,
-		Handler:		   rp,
-		ReadTimeout:	   readTimeout * time.Second,
-		ReadHeaderTimeout: readHeaderTimeout * time.Second,
-		WriteTimeout:	   writeTimeout * time.Second,
-		MaxHeaderBytes:    1 << 20, // 1 MB. Sufficient?
-		ErrorLog:		   stdlog,
+	tout := &socks5.Timeouts{
+		AuthTimeout: 5 * time.Second,
+		RequestTimeout: 5 * time.Second,
+		ReadTimeout: 30 * time.Second,
+		WriteTimeout: 30 * time.Second,
 	}
-	p.srv = s
-	*/
-	p.TCPListener = ln
-	p.grl = rl
-	p.prl = pl
+
+	p.srv, err = socks5.NewServer(prox, tout)
+	if err != nil {
+		die("Can't create socks5 server: %s", err)
+	}
 
 	return p, nil
 }
@@ -124,30 +100,38 @@ func NewSocksProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 // Start listener
 func (p *SocksProxy) Start() {
 
+	lc := p.conf
+	ln, err := net.ListenTCP("tcp", lc.Listen.TCPAddr)
+	if err != nil {
+		die("Can't listen on %s: %s", lc.Listen.String(), err)
+	}
+
+	p.TCPListener = ln
+
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
 
-		lc := p.conf
 
-		p.log.Info("Starting authproxy ..")
+		p.log.Info("Starting socksproxy ..")
 		p.log.Info("Ratelimit: Global %d req/s, Per-host: %d req/s",
 			lc.Ratelimit.Global, lc.Ratelimit.PerHost)
 
-		// This calls our over-ridden "Accept()" method. Finally, it
-		// will call srv.Handler.ServeHTTP() -- ie, the reverse
-		// proxy implementation.
-		//p.srv.Serve(p)
+		err = p.srv.Serve(ln)
+		if err != nil {
+			p.log.Error("socks server exited with %s", err)
+		}
 	}()
 }
 
 // Stop server
-// XXX Hijacked Websocket conns are not shutdown here
 func (p *SocksProxy) Stop() {
 	close(p.stop)
 
-	//cx, _ := context.WithTimeout(context.Background(), 10*time.Second)
-	//p.srv.Shutdown(cx)
+	cx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	p.srv.Shutdown(cx)
+
+	defer cancel()
 
 	p.wg.Wait()
 	p.log.Info("authproxy shutdown")
@@ -161,6 +145,7 @@ func (p *SocksProxy) Stop() {
 //	   go-routines
 func (p *SocksProxy) Accept() (net.Conn, error) {
 	ln := p.TCPListener
+
 	for {
 		ln.SetDeadline(time.Now().Add(2 * time.Second))
 
@@ -171,7 +156,7 @@ func (p *SocksProxy) Accept() (net.Conn, error) {
 			if err == nil {
 				nc.Close()
 			}
-			return nil, &errShutdown
+			return nil, errShutdown
 
 		default:
 		}
@@ -211,4 +196,4 @@ func (p *SocksProxy) Accept() (net.Conn, error) {
 
 
 
-// vim: noexpandtab:
+// vim: noexpandtab:ts=8:sw=8:
