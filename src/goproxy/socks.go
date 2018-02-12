@@ -294,7 +294,7 @@ func (px *socksProxy) readMethods(conn net.Conn) (m Methods, err error) {
 func (px *socksProxy) doConnect(lhs net.Conn) (rhs net.Conn, s string, err error) {
     ls  := lhs.RemoteAddr().String()
 
-    buf := make([]byte, 256)
+    buf := make([]byte, 512)
     log := px.log
 
     n, err := lhs.Read(buf)

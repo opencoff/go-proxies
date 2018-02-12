@@ -77,16 +77,18 @@ func NewSocksProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 
 
 	prox := &socks5.Proxy{
-		Dialer: dialer,
+		Dialer:        dialer,
 		FlushInterval: 30 * time.Second,
-		ErrorLog: stdlog,
+		ErrorLog:      stdlog,
+		NotifyConnect: p.notifyConnect,
+		NotifyClose:   p.notifyClose,
 	}
 
 	tout := &socks5.Timeouts{
-		AuthTimeout: 5 * time.Second,
+		AuthTimeout:    5 * time.Second,
 		RequestTimeout: 5 * time.Second,
-		ReadTimeout: 30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   30 * time.Second,
 	}
 
 	p.srv, err = socks5.NewServer(prox, tout)
@@ -117,7 +119,7 @@ func (p *SocksProxy) Start() {
 		p.log.Info("Ratelimit: Global %d req/s, Per-host: %d req/s",
 			lc.Ratelimit.Global, lc.Ratelimit.PerHost)
 
-		err = p.srv.Serve(ln)
+		err = p.srv.Serve(p)
 		if err != nil {
 			p.log.Error("socks server exited with %s", err)
 		}
@@ -128,7 +130,7 @@ func (p *SocksProxy) Start() {
 func (p *SocksProxy) Stop() {
 	close(p.stop)
 
-	cx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	cx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	p.srv.Shutdown(cx)
 
 	defer cancel()
@@ -190,10 +192,26 @@ func (p *SocksProxy) Accept() (net.Conn, error) {
 			continue
 		}
 
+		p.log.Debug("accepted new client %s", nc.RemoteAddr().String())
 		return nc, nil
 	}
 }
 
 
+func (p *SocksProxy) notifyConnect(a, b net.Addr) {
+	if p.ulog != nil {
+		p.ulog.Info("socks5: connect %s -- %s", a.String(), b.String())
+	}
+
+	p.log.Debug("socks5: connect %s %s", a.String(), b.String())
+}
+
+func (p *SocksProxy) notifyClose(a, b net.Addr) {
+	if p.ulog != nil {
+		p.ulog.Info("socks5: disconnect %s -- %s", a.String(), b.String())
+	}
+
+	p.log.Debug("socks5: disconnect %s %s", a.String(), b.String())
+}
 
 // vim: noexpandtab:ts=8:sw=8:

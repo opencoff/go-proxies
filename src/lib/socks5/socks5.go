@@ -33,6 +33,10 @@ type Proxy struct {
 	// default is to assume that the connection is allowed.
 	AllowConnect func(client net.Addr, remote net.Addr) bool
 
+	// event notifiers
+	NotifyConnect func(client net.Addr, remote net.Addr)
+	NotifyClose   func(client net.Addr, remote net.Addr)
+
 	// Error log
 	ErrorLog *stdlog.Logger
 
@@ -90,6 +94,20 @@ func NewServer(p *Proxy, to *Timeouts) (*Server, error) {
 		conns:     make(map[*conn]bool),
 	}
 
+	if p.AllowConnect == nil {
+		p.AllowConnect = func(a, b net.Addr) bool {
+			return true
+		}
+	}
+
+	if p.NotifyConnect == nil {
+		p.NotifyConnect = func(a, b net.Addr) {}
+	}
+
+	if p.NotifyClose == nil {
+		p.NotifyClose = func(a, b net.Addr) {}
+	}
+
 	return s, nil
 }
 
@@ -141,6 +159,7 @@ func (s *Server) Serve(ln net.Listener) error {
 		return e
 	}
 }
+
 
 // Gracefully shutdown the server
 func (s *Server) Shutdown(ctx context.Context) error {
@@ -237,22 +256,28 @@ func (c *conn) serve(ctx context.Context) {
 
 	defer c.close()
 
+
 	rem  := c.car
 	conn := c.c
 	prox := c.srv.pr
+
+	log := func(z string, v ...interface{}) {
+		x := fmt.Sprintf("%s: %s", rem, z)
+		prox.ErrorLog.Printf(x, v...)
+	}
 
 	// 1. Read version & auth supported methods
 	b = c.buf[:1024]
 	n, err := conn.Read(b)
 	if err != nil {
 		if err != io.EOF {
-			//log.Printf("%s: Unable to read version info: %s", rem, err)
+			log("can't read version info: %s", err)
 		}
 		return
 	}
 
 	if n < 2 {
-		//log.Printf("%s: Partial data while reading version; exp 2, saw %d", rem, n)
+		log("partial data while reading version; exp 2 saw %d", n)
 		return
 	}
 
@@ -269,7 +294,7 @@ func (c *conn) serve(ctx context.Context) {
 	}
 
 	if n < nmeth {
-		//log.Printf("%s: Partial data while reading auth-methods: exp %d, want %d\n", rem, nmeth, n)
+		log("partial data while reading auth methods; exp %d saw %d", nmeth, n)
 		return
 	}
 
@@ -278,17 +303,26 @@ func (c *conn) serve(ctx context.Context) {
 	b[1] = 0    // no auth needed
 	_, err = conn.Write(b)
 	if err != nil {
+		log("client write error: %s", err)
 		return
 	}
 
 	// 2. Read URL/host to connect to
-	b = c.buf
+	b = c.buf[:512]
 	n, err = conn.Read(b)
 	if err != nil {
+		log("can't read destination: %s", err)
 		if err != io.EOF {
-			//log.Printf("%s: Unable to read dest info: %s", rem, err)
+			//log("can't read destination: %s", err)
 		}
 		return
+	}
+	xn   := n
+
+	badaddr := func(z byte) {
+		b   := c.buf[:xn]
+		b[1] = z    // bad address -- no other avail code?
+		conn.Write(b)
 	}
 
 	// Packet Format:
@@ -306,22 +340,13 @@ func (c *conn) serve(ctx context.Context) {
 	//   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
 	if n < 10 {
-		//log.Printf("%s: Partial data while reading conn info; only saw %d", rem, n)
+		log("partial data while reading destination; exp %d saw %d", 10, n)
 		return
 	}
 
 	if b[1] != 1 {
-		b[1] = 0x7  // command not supported
-		_, err = conn.Write(b)
-		if err != nil {
-			return
-		}
-	}
-
-	badaddr := func(z byte) {
-		b   := c.buf
-		b[1] = z    // bad address -- no other avail code?
-		conn.Write(b)
+		badaddr(7)
+		log("only TCP connect supported; saw %d", b[1])
 	}
 
 	var x bytes.Buffer
@@ -334,7 +359,7 @@ func (c *conn) serve(ctx context.Context) {
 	case 0x1: // IPv4 Addr in MSB format
 		if n < 4 {
 			badaddr(0xff)
-			//log.Printf("%s: Partial data while reading IPv4 addr; exp 4, saw %d", rem, n)
+			log("partial data while reading IPv4; exp %d saw %d", 4, n)
 			return
 		}
 		x.WriteString(fmt.Sprintf("%d.%d.%d.%d", b[0], b[1], b[2], b[3]))
@@ -344,7 +369,7 @@ func (c *conn) serve(ctx context.Context) {
 		m := int(b[0])
 		if n < m {
 			badaddr(0xff)
-			//log.Printf("%s: Partial data while reading FQDN; exp %d, saw %d", rem, m, n)
+			log("partial data while reading FQDN; exp %d saw %d", m, n)
 			return
 		}
 
@@ -357,7 +382,7 @@ func (c *conn) serve(ctx context.Context) {
 		m := 16
 		if n < m {
 			badaddr(0xff)
-			//log.Printf("%s: Partial data while reading IPv6 addr; exp %d, saw %d", rem, m, n)
+			log("partial data while reading IPv6; exp %d saw %d", m, n)
 			return
 		}
 		x.WriteString(fmt.Sprintf("[%02x", b[0]))
@@ -373,29 +398,30 @@ func (c *conn) serve(ctx context.Context) {
 
 	var saddr string = x.String()
 
-	// XXX Call ACL hook for this host and client combo.
-	if prox.AllowConnect != nil {
-		addr, err := net.ResolveTCPAddr("tcp", saddr)
-		if err != nil {
-			badaddr(0xff)
-			return
-		}
-
-		if ok := prox.AllowConnect(rem, addr); !ok {
-			badaddr(0x05)	// conn refused
-			return
-		}
+	addr, err := net.ResolveTCPAddr("tcp", saddr)
+	if err != nil {
+		log("can't resolve %s: %s", saddr, err)
+		badaddr(0xff)
+		return
 	}
 
-	b = c.buf
+	if ok := prox.AllowConnect(rem, addr); !ok {
+		log("policy denial to %s", saddr)
+		badaddr(0x05)	// conn refused
+		return
+	}
+
 	rhs, err := prox.Dialer.DialContext(ctx, "tcp", saddr)
 	if err != nil {
+		log("can't connect to %s: %s", saddr, err)
 		badaddr(0x3)
 		return
 	}
 	defer rhs.Close()
 
 	badaddr(0x0)	// all OK!
+
+	prox.NotifyConnect(rem, addr)
 
 	cpctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -404,14 +430,15 @@ func (c *conn) serve(ctx context.Context) {
 
 	wg.Add(2)
 
-	go cancellableCopy(cpctx, conn, rhs, nil)
 	go cancellableCopy(cpctx, rhs, conn, nil)
+	go cancellableCopy(cpctx, conn, rhs, nil)
 
 	// wait for both go-routines to end and then  close 'ch'
 	cpdone := make(chan bool)
 	go func(ch chan bool) {
 		wg.Wait()
 		close(ch)
+		prox.NotifyClose(rem, addr)
 	}(cpdone)
 
 	// wait for go-routines to finish or we are asked to shutdown
@@ -454,21 +481,30 @@ func cancellableCopy(ctx context.Context, d, s net.Conn, b []byte) {
 }
 
 func copyBuf(d, s net.Conn, b []byte) error {
+	log := func(z string, v ...interface{}) {
+		//x := fmt.Sprintf("%s->%s: %s\n", s.RemoteAddr().String(), d.RemoteAddr().String(), z)
+		//stdlog.Printf(x, v...)
+	}
 	for {
-		nr, err := s.Read(b)
+		nr, err := s.Read(b[:cap(b)])
 		if err != nil && err != io.EOF && err != context.Canceled && !isReset(err) {
+			log("i/o error %s", err)
 			return err
 		}
 		if nr > 0 {
+			log("%d bytes read", nr)
 			nw, werr := d.Write(b[:nr])
 			if werr != nil {
+				log("write error %s", werr)
 				return werr
 			}
 			if nw != nr {
+				log("partial write")
 				return io.ErrShortWrite
 			}
 		}
 		if err != nil {
+			log("i/o error2 %s", err)
 			return err
 		}
 	}

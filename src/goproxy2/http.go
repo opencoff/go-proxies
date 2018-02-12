@@ -10,14 +10,14 @@
 package main
 
 import (
-	//"io"
 	"fmt"
 	"context"
+	"bufio"
 	"net"
 	"sync"
 	"time"
 	"strings"
-	//"net/url"
+	"net/url"
 	"net/http"
 
 	"lib/httproxy"
@@ -94,7 +94,7 @@ func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 	}
 
 	p.tr = &http.Transport{
-		Dial:                p.dialer.Dial,
+		DialContext:         p.dialer.DialContext,
 		TLSHandshakeTimeout: tlsHandshakeTimeout * time.Second,
 		MaxIdleConnsPerHost: perHostIdleConn,
 		IdleConnTimeout:     idleConnTimeout * time.Second,
@@ -104,6 +104,7 @@ func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 
 	p.rp = &httproxy.Proxy{
 		Transport:     p.tr,
+		AllowConnect:  true,
 		FlushInterval: flushInterval * time.Second,
 		ErrorLog:      stdlog,
 		BufferPool:    newBufPool(defaultIOSize),
@@ -174,11 +175,24 @@ func (p *HTTPProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		if err != nil {
 			p.log.Warn("can't serve websocket: %s", err)
 			http.Error(rw, "can't serve websocket", http.StatusBadGateway)
+			return
 		}
 		return
 	}
 
-	p.rp.ServeHTTP(rw, req)
+	lrw := &loggingResponseWriter{
+		meth: req.Method,
+		log:  p.log,
+		ulog: p.ulog,
+		rw:   rw,
+		url:  req.URL,
+		client: req.RemoteAddr,
+	}
+
+	lrw.start = time.Now()
+	p.rp.ServeHTTP(lrw, req)
+
+	lrw.finish()
 }
 
 
@@ -210,14 +224,18 @@ func (p *HTTPProxy) serveWebSocket(rw http.ResponseWriter, req *http.Request) er
 		req.Header.Set("X-Forwarded-For", clientIP)
 	}
 
-	err = req.Write(dconn)
+	nctx, cancel := context.WithCancel(ctx)
+
+	d := dconn.(*net.TCPConn)
+	s := cconn.(*net.TCPConn)
+
+	err = req.Write(d)
 	if err != nil {
 		return err
 	}
 
-	nctx, cancel := context.WithCancel(ctx)
+	buf.WriteTo(d)
 
-	buf.WriteTo(dconn)
 	b0 := p.rp.BufferPool.Get()
 	b1 := p.rp.BufferPool.Get()
 
@@ -226,9 +244,6 @@ func (p *HTTPProxy) serveWebSocket(rw http.ResponseWriter, req *http.Request) er
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-
-	d := dconn.(*net.TCPConn)
-	s := cconn.(*net.TCPConn)
 
 	go func() {
 		defer wg.Done()
@@ -331,5 +346,72 @@ func headerGet(h http.Header, k string) string {
 	}
 	return ""
 }
+
+
+type loggingResponseWriter struct {
+	start    time.Time
+	meth     string
+	log     *L.Logger
+	ulog    *L.Logger
+	rw       http.ResponseWriter
+	url     *url.URL
+
+	status   int
+	bytes    int64
+	client   string  
+	hijack   net.Conn
+
+}
+
+
+func (lrw *loggingResponseWriter) Header() http.Header {
+	return lrw.rw.Header()
+}
+
+func (lrw *loggingResponseWriter) Write(b []byte) (n int, err error) {
+	if lrw.hijack != nil {
+		n, err = lrw.hijack.Write(b)
+	} else {
+		n, err = lrw.rw.Write(b)
+	}
+	if n > 0 {
+		lrw.bytes += int64(n)
+	}
+	return n, err
+}
+
+func (lrw *loggingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := lrw.rw.(http.Hijacker); ok {
+		c, b, err := h.Hijack()
+		if err == nil {
+			lrw.hijack = c
+		}
+		return c, b, err
+	}
+
+	return nil, nil, fmt.Errorf("rw not a hijacker")
+}
+
+func (lrw *loggingResponseWriter) WriteHeader(s int) {
+	if lrw.hijack == nil {
+		lrw.rw.WriteHeader(s)
+		lrw.status = s
+	}
+}
+
+
+func (lrw *loggingResponseWriter) finish() {
+	now := time.Now()
+	url := lrw.url.Host
+	who := lrw.client
+	lrw.log.Info("%s %s %q %d %d bytes", who, lrw.meth, url, lrw.status, lrw.bytes)
+	if lrw.ulog != nil {
+		dur := format(now.Sub(lrw.start))
+		ts  := now.UTC().Format(time.RFC3339)
+		lrw.ulog.Info("time=%s client=%s status=%d duration=%s url=%q bytes=%d",
+				ts, who, lrw.status, dur, url, lrw.bytes)
+	}
+}
+
 
 // vim: noexpandtab:sw=8:ts=8:
