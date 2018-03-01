@@ -10,13 +10,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
-	"syscall"
 	"sync"
+	"syscall"
 	"time"
-	"errors"
 
 	"lib/httproxy"
 )
@@ -118,4 +118,4 @@ func (b *bufPool) Put(z []byte) {
 	b.p.Put(z)
 }
 
-// vim: noexpandtab:sw=8:ts=8:
+// vim: ft=go:sw=8:ts=8:noexpandtab:tw=98:

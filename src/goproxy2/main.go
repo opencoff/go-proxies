@@ -21,7 +21,7 @@ import (
 
 	flag "github.com/ogier/pflag"
 
-	L "github.com/opencoff/go-lib/logger"
+	L "github.com/opencoff/go-logger"
 )
 
 // This will be filled in by "build"
@@ -38,7 +38,6 @@ type Proxy interface {
 	Start()
 	Stop()
 }
-
 
 func main() {
 	// maxout concurrency
@@ -120,9 +119,9 @@ func main() {
 	var srv []Proxy
 
 	for _, v := range cfg.Http {
-                if v.Listen.TCPAddr == nil {
-                        die("http: No listen address?")
-                }
+		if v.Listen.TCPAddr == nil {
+			die("http: No listen address?")
+		}
 
 		s, err := NewHTTPProxy(&v, log, ulog)
 		if err != nil {
@@ -134,9 +133,9 @@ func main() {
 	}
 
 	for _, v := range cfg.Socks {
-                if v.Listen.TCPAddr == nil {
-                        die("socks5: No listen address?")
-                }
+		if v.Listen.TCPAddr == nil {
+			die("socks5: No listen address?")
+		}
 		s, err := NewSocksProxy(&v, log, ulog)
 		if err != nil {
 			die("Can't create socks5 listener on %s: %s", v, err)
@@ -205,4 +204,4 @@ func initProfilers(log *L.Logger, dbdir string) {
 	})
 }
 
-// vim: ft=go:sw=8:ts=8:expandtab:tw=88:
+// vim: ft=go:sw=8:ts=8:noexpandtab:tw=98:

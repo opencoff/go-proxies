@@ -9,26 +9,26 @@
 package main
 
 import (
-	"os"
 	"fmt"
+	"io/ioutil"
 	"net"
-	"time"
+	"os"
+	"os/signal"
 	"runtime"
+	"runtime/pprof"
 	"strings"
 	"syscall"
-	"io/ioutil"
-	"os/signal"
-	"runtime/pprof"
+	"time"
 
 	flag "github.com/ogier/pflag"
 	yaml "gopkg.in/yaml.v2"
 
-	L "github.com/opencoff/go-lib/logger"
+	L "github.com/opencoff/go-logger"
 )
 
 // This will be filled in by "build"
-var RepoVersion string	  = "UNDEFINED"
-var Buildtime   string	  = "UNDEFINED"
+var RepoVersion string = "UNDEFINED"
+var Buildtime string = "UNDEFINED"
 var ProductVersion string = "UNDEFINED"
 
 // Number of minutes of profile data to capture
@@ -41,54 +41,53 @@ type Proxy interface {
 	Stop()
 }
 
-
 // List of config entries
 type Conf struct {
-	Logging          string         `yaml:"log"`
-	LogLevel         string         `yaml:"loglevel"`
-	URLlog			 string			`yaml:"urllog"`
-	Http  			[]ListenConf
-	Socks 			[]ListenConf
+	Logging  string `yaml:"log"`
+	LogLevel string `yaml:"loglevel"`
+	URLlog   string `yaml:"urllog"`
+	Http     []ListenConf
+	Socks    []ListenConf
 }
 
 type ListenConf struct {
-	Listen		string		`yaml:"listen"`
-	Bind		string		`yaml:"bind"`
-	Allow		[]subnet	`yaml:"allow"`
-	Deny		[]subnet	`yaml:"deny"`
+	Listen string   `yaml:"listen"`
+	Bind   string   `yaml:"bind"`
+	Allow  []subnet `yaml:"allow"`
+	Deny   []subnet `yaml:"deny"`
 
 	// rate limit -- perhost and global
-	Ratelimit	RateLimit	`yaml:"ratelimit"`
+	Ratelimit RateLimit `yaml:"ratelimit"`
 }
 
 type RateLimit struct {
-	Global		int			`yaml:"global"`
-	PerHost		int			`yaml:"perhost"`
+	Global  int `yaml:"global"`
+	PerHost int `yaml:"perhost"`
 }
-
 
 // An IP/Subnet
 type subnet struct {
-    net.IPNet
+	net.IPNet
 }
 
 // Custom unmarshaler for IPNet
-func (ipn *subnet) UnmarshalYAML(unm func(v interface{}) error) error  {
-    var s string
+func (ipn *subnet) UnmarshalYAML(unm func(v interface{}) error) error {
+	var s string
 
-    // First unpack the bytes as a string. We then parse the string
-    // as a CIDR
+	// First unpack the bytes as a string. We then parse the string
+	// as a CIDR
 	err := unm(&s)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
-    _, net, err := net.ParseCIDR(s)
-    if err == nil {
-        ipn.IP   = net.IP
-        ipn.Mask = net.Mask
-    }
-    return err
+	_, net, err := net.ParseCIDR(s)
+	if err == nil {
+		ipn.IP = net.IP
+		ipn.Mask = net.Mask
+	}
+	return err
 }
-
 
 // Parse config file in YAML format and return
 func ReadYAML(fn string) (*Conf, error) {
@@ -135,8 +134,7 @@ func main() {
 		die("No config file!\nUsage: %s", usage)
 	}
 
-
-	cfgfile  := args[0]
+	cfgfile := args[0]
 	cfg, err := ReadYAML(cfgfile)
 	if err != nil {
 		die("Can't read config file %s: %s", cfgfile, err)
@@ -170,17 +168,16 @@ func main() {
 		warn("Can't enable log rotation: %s", err)
 	}
 
-    var ulog *L.Logger
+	var ulog *L.Logger
 
-    if len(cfg.URLlog) > 0 {
-        ulog, err := L.NewFilelog(cfg.URLlog, L.LOG_INFO, "", 0)
-        if err != nil {
-            die("Can't create URL logger: %s", err)
-        }
+	if len(cfg.URLlog) > 0 {
+		ulog, err := L.NewFilelog(cfg.URLlog, L.LOG_INFO, "", 0)
+		if err != nil {
+			die("Can't create URL logger: %s", err)
+		}
 
-        ulog.EnableRotation(00, 00, 01, 01)
-    }
-
+		ulog.EnableRotation(00, 00, 01, 01)
+	}
 
 	log.Info("goproxy - %s [%s - built on %s] starting up (logging at %s)...",
 		ProductVersion, RepoVersion, Buildtime, L.PrioString[log.Prio()])
@@ -272,4 +269,4 @@ func initProfilers(log *L.Logger, dbdir string) {
 	})
 }
 
-// vim: ft=go:sw=4:ts=4:noexpandtab:tw=78:
+// vim: ft=go:sw=8:ts=8:noexpandtab:tw=98:

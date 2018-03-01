@@ -29,4 +29,4 @@ func warn(f string, v ...interface{}) {
 	os.Stderr.Sync()
 }
 
-// vim: ft=go:sw=4:ts=4:noexpandtab:tw=78:
+// vim: ft=go:sw=8:ts=8:noexpandtab:tw=98:

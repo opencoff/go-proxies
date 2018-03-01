@@ -9,7 +9,6 @@
 
 package main
 
-
 import (
 	"fmt"
 	"io/ioutil"
@@ -48,7 +47,7 @@ type subnet struct {
 }
 
 type netaddr struct {
-        *net.TCPAddr
+	*net.TCPAddr
 }
 
 // custom unmarshaler for TCP Addr
@@ -62,11 +61,11 @@ func (n *netaddr) UnmarshalYAML(unm func(v interface{}) error) error {
 		return err
 	}
 
-        a, err := net.ResolveTCPAddr("tcp", s)
-        if err == nil {
-                n.TCPAddr = a
-        }
-        return err
+	a, err := net.ResolveTCPAddr("tcp", s)
+	if err == nil {
+		n.TCPAddr = a
+	}
+	return err
 }
 
 // Custom unmarshaler for IPNet
@@ -82,7 +81,7 @@ func (ipn *subnet) UnmarshalYAML(unm func(v interface{}) error) error {
 
 	_, net, err := net.ParseCIDR(s)
 	if err == nil {
-                ipn.IPNet = net
+		ipn.IPNet = net
 	}
 	return err
 }
@@ -103,4 +102,4 @@ func ReadYAML(fn string) (*Conf, error) {
 	return &cfg, nil
 }
 
-// vim: ft=go:sw=8:ts=8:expandtab:tw=88:
+// vim: ft=go:sw=8:ts=8:noexpandtab:tw=98:

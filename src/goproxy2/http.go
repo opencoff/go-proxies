@@ -10,33 +10,33 @@
 package main
 
 import (
-	"fmt"
-	"context"
 	"bufio"
+	"context"
+	"fmt"
 	"net"
+	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
-	"strings"
-	"net/url"
-	"net/http"
 
 	"lib/httproxy"
 
-	L "github.com/opencoff/go-lib/logger"
-	"github.com/opencoff/go-lib/ratelimit"
+	L "github.com/opencoff/go-logger"
+	"github.com/opencoff/go-ratelimit"
 )
 
 // XXX These should be in a config file
-const dialerTimeout       = 30    // seconds
-const dialerKeepAlive     = 30    // seconds
-const tlsHandshakeTimeout = 30    // seconds
-const readTimeout         = 20    // seconds
-const readHeaderTimeout   = 10    // seconds
-const writeTimeout        = 60    // seconds; 3x read timeout. Enough time?
-const flushInterval       = 10    // seconds
-const perHostIdleConn     = 1024  // XXX too big?
-const idleConnTimeout     = 120   // seconds
-const defaultIOSize       = 8192  // bytes
+const dialerTimeout = 30       // seconds
+const dialerKeepAlive = 30     // seconds
+const tlsHandshakeTimeout = 30 // seconds
+const readTimeout = 20         // seconds
+const readHeaderTimeout = 10   // seconds
+const writeTimeout = 60        // seconds; 3x read timeout. Enough time?
+const flushInterval = 10       // seconds
+const perHostIdleConn = 1024   // XXX too big?
+const idleConnTimeout = 120    // seconds
+const defaultIOSize = 8192     // bytes
 
 type HTTPProxy struct {
 	*net.TCPListener
@@ -55,24 +55,24 @@ type HTTPProxy struct {
 	ulog *L.Logger
 
 	dialer *net.Dialer
-	tr *http.Transport
-	srv *http.Server
-	rp  *httproxy.Proxy
+	tr     *http.Transport
+	srv    *http.Server
+	rp     *httproxy.Proxy
 }
 
 func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 	var err error
 
-	ln     := lc.Listen.TCPAddr
-	log     = log.New(ln.String(), 0)
+	ln := lc.Listen.TCPAddr
+	log = log.New(ln.String(), 0)
 	stdlog := log.StdLogger()
-	addr   := lc.Listen.TCPAddr
+	addr := lc.Listen.TCPAddr
 
 	p := &HTTPProxy{
-		conf:        lc,
-		log:         log,
-		ulog:        ulog,
-		stop:        make(chan bool),
+		conf: lc,
+		log:  log,
+		ulog: ulog,
+		stop: make(chan bool),
 	}
 
 	p.grl, err = ratelimit.New(lc.Ratelimit.Global, 1)
@@ -101,7 +101,6 @@ func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 		DisableCompression:  true,
 	}
 
-
 	p.rp = &httproxy.Proxy{
 		Transport:     p.tr,
 		AllowConnect:  true,
@@ -119,7 +118,7 @@ func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 		WriteTimeout:      writeTimeout * time.Second,
 		MaxHeaderBytes:    1 << 20,
 		ErrorLog:          stdlog,
-		ConnState:         func(c net.Conn, s http.ConnState) {
+		ConnState: func(c net.Conn, s http.ConnState) {
 			switch s {
 			case http.StateNew:
 				// ++OpenConn
@@ -167,7 +166,6 @@ func (p *HTTPProxy) Stop() {
 	p.log.Info("http-proxy shutdown")
 }
 
-
 func (p *HTTPProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	// XXX Add a health-check URL?
 	if upg := headerGet(req.Header, "Upgrade"); strings.ToLower(upg) == "websocket" {
@@ -181,11 +179,11 @@ func (p *HTTPProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	lrw := &loggingResponseWriter{
-		meth: req.Method,
-		log:  p.log,
-		ulog: p.ulog,
-		rw:   rw,
-		url:  req.URL,
+		meth:   req.Method,
+		log:    p.log,
+		ulog:   p.ulog,
+		rw:     rw,
+		url:    req.URL,
 		client: req.RemoteAddr,
 	}
 
@@ -194,7 +192,6 @@ func (p *HTTPProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	lrw.finish()
 }
-
 
 func (p *HTTPProxy) serveWebSocket(rw http.ResponseWriter, req *http.Request) error {
 	req.URL.Host = req.Host
@@ -266,7 +263,6 @@ func (p *HTTPProxy) serveWebSocket(rw http.ResponseWriter, req *http.Request) er
 	return nil
 }
 
-
 // Notes:
 //	 - HTTPProxy is also a TCPListener
 //	 - http.Server.Serve() is passed a Listener object (p)
@@ -337,7 +333,6 @@ func (p *HTTPProxy) proxyURL(r *http.Request) (int, error) {
 	return http.StatusOK, nil
 }
 
-
 func headerGet(h http.Header, k string) string {
 	if v, ok := h[k]; ok {
 		if len(v) > 0 {
@@ -347,22 +342,19 @@ func headerGet(h http.Header, k string) string {
 	return ""
 }
 
-
 type loggingResponseWriter struct {
-	start    time.Time
-	meth     string
-	log     *L.Logger
-	ulog    *L.Logger
-	rw       http.ResponseWriter
-	url     *url.URL
+	start time.Time
+	meth  string
+	log   *L.Logger
+	ulog  *L.Logger
+	rw    http.ResponseWriter
+	url   *url.URL
 
-	status   int
-	bytes    int64
-	client   string  
-	hijack   net.Conn
-
+	status int
+	bytes  int64
+	client string
+	hijack net.Conn
 }
-
 
 func (lrw *loggingResponseWriter) Header() http.Header {
 	return lrw.rw.Header()
@@ -399,7 +391,6 @@ func (lrw *loggingResponseWriter) WriteHeader(s int) {
 	}
 }
 
-
 func (lrw *loggingResponseWriter) finish() {
 	now := time.Now()
 	url := lrw.url.Host
@@ -407,11 +398,10 @@ func (lrw *loggingResponseWriter) finish() {
 	lrw.log.Info("%s %s %q %d %d bytes", who, lrw.meth, url, lrw.status, lrw.bytes)
 	if lrw.ulog != nil {
 		dur := format(now.Sub(lrw.start))
-		ts  := now.UTC().Format(time.RFC3339)
+		ts := now.UTC().Format(time.RFC3339)
 		lrw.ulog.Info("time=%s client=%s status=%d duration=%s url=%q bytes=%d",
-				ts, who, lrw.status, dur, url, lrw.bytes)
+			ts, who, lrw.status, dur, url, lrw.bytes)
 	}
 }
 
-
-// vim: noexpandtab:sw=8:ts=8:
+// vim: ft=go:sw=8:ts=8:noexpandtab:tw=98:

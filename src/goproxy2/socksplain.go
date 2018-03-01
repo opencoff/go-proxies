@@ -16,10 +16,9 @@ import (
 
 	"lib/socks5"
 
-	L "github.com/opencoff/go-lib/logger"
-	"github.com/opencoff/go-lib/ratelimit"
+	L "github.com/opencoff/go-logger"
+	"github.com/opencoff/go-ratelimit"
 )
-
 
 type SocksProxy struct {
 	*net.TCPListener
@@ -28,7 +27,7 @@ type SocksProxy struct {
 	conf *ListenConf
 
 	stop chan bool
-	wg	 sync.WaitGroup
+	wg   sync.WaitGroup
 
 	grl *ratelimit.Ratelimiter
 	prl *ratelimit.PerIPRatelimiter
@@ -38,20 +37,19 @@ type SocksProxy struct {
 	// logger
 	log  *L.Logger
 	ulog *L.Logger
-
 }
 
 func NewSocksProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 	var err error
 
-	ln     := lc.Listen.TCPAddr
-	log     = log.New(ln.String(), 0)
+	ln := lc.Listen.TCPAddr
+	log = log.New(ln.String(), 0)
 	stdlog := log.StdLogger()
-	addr   := lc.Listen
+	addr := lc.Listen
 
 	p := &SocksProxy{
 		conf: lc,
-		log: log,
+		log:  log,
 		ulog: ulog,
 		stop: make(chan bool),
 	}
@@ -74,7 +72,6 @@ func NewSocksProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 	if lc.Bind.TCPAddr != nil {
 		dialer.LocalAddr = lc.Bind.TCPAddr
 	}
-
 
 	prox := &socks5.Proxy{
 		Dialer:        dialer,
@@ -113,7 +110,6 @@ func (p *SocksProxy) Start() {
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-
 
 		p.log.Info("Starting socksproxy ..")
 		p.log.Info("Ratelimit: Global %d req/s, Per-host: %d req/s",
@@ -197,7 +193,6 @@ func (p *SocksProxy) Accept() (net.Conn, error) {
 	}
 }
 
-
 func (p *SocksProxy) notifyConnect(a, b net.Addr) {
 	if p.ulog != nil {
 		p.ulog.Info("socks5: connect %s -- %s", a.String(), b.String())
@@ -214,4 +209,4 @@ func (p *SocksProxy) notifyClose(a, b net.Addr) {
 	p.log.Debug("socks5: disconnect %s %s", a.String(), b.String())
 }
 
-// vim: noexpandtab:ts=8:sw=8:
+// vim: ft=go:sw=8:ts=8:noexpandtab:tw=98:

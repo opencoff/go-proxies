@@ -10,9 +10,9 @@
 package main
 
 import (
-        "io"
-        "net"
-        "context"
+	"context"
+	"io"
+	"net"
 )
 
 func CancellableCopy(ctx context.Context, d, s *net.TCPConn, b []byte) {
@@ -22,12 +22,12 @@ func CancellableCopy(ctx context.Context, d, s *net.TCPConn, b []byte) {
 	}()
 
 	select {
-	case _ = <- ch:
+	case _ = <-ch:
 		return
-	case <- ctx.Done():
+	case <-ctx.Done():
 		s.CloseRead()
 		d.CloseWrite()
-		<- ch
+		<-ch
 	}
 }
 
@@ -56,4 +56,4 @@ func copyBuf(d, s *net.TCPConn, b []byte) error {
 	return nil
 }
 
-// vim: noexpandtab:ts=8:sw=8:
+// vim: ft=go:sw=8:ts=8:noexpandtab:tw=98:
