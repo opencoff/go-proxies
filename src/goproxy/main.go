@@ -16,7 +16,6 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/pprof"
-	"strings"
 	"syscall"
 	"time"
 
@@ -140,22 +139,19 @@ func main() {
 		die("Can't read config file %s: %s", cfgfile, err)
 	}
 
+	prio, ok := L.ToPriority(cfg.LogLevel)
+	if !ok {
+		die("Invalid log-level %s", cfg.LogLevel)
+	}
+
 	// We want microsecond timestamps and debug logs to have short
 	// filenames
 	const logflags int = L.Ldate | L.Ltime | L.Lshortfile | L.Lmicroseconds
-	prio := L.LOG_DEBUG
-	logf := "STDOUT"
+	var logf string = cfg.Logging
 
-	if !*debugFlag {
-		var ok bool
-
-		lvl := strings.ToUpper(cfg.LogLevel)
-		prio, ok = L.PrioName[lvl]
-		if !ok {
-			die("Unknown log level %s", lvl)
-		}
-
-		logf = cfg.Logging
+	if *debugFlag {
+		prio = L.LOG_DEBUG
+		logf = "STDOUT"
 	}
 
 	log, err := L.NewLogger(logf, prio, "goproxy", logflags)
@@ -180,7 +176,7 @@ func main() {
 	}
 
 	log.Info("goproxy - %s [%s - built on %s] starting up (logging at %s)...",
-		ProductVersion, RepoVersion, Buildtime, L.PrioString[log.Prio()])
+		ProductVersion, RepoVersion, Buildtime, log.Prio())
 
 	var srv []Proxy
 
