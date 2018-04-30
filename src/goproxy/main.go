@@ -45,6 +45,8 @@ type Conf struct {
 	Logging  string `yaml:"log"`
 	LogLevel string `yaml:"loglevel"`
 	URLlog   string `yaml:"urllog"`
+	Uid      string `yaml:"uid"`
+	Gid      string `yaml:"gid"`
 	Http     []ListenConf
 	Socks    []ListenConf
 }
@@ -190,7 +192,6 @@ func main() {
 		}
 
 		srv = append(srv, s)
-		s.Start()
 	}
 
 	for _, v := range cfg.Socks {
@@ -203,6 +204,12 @@ func main() {
 		}
 
 		srv = append(srv, s)
+	}
+
+	// Drop privileges before starting the servers
+	DropPrivilege(cfg.Uid, cfg.Gid)
+
+	for _, s := range srv {
 		s.Start()
 	}
 
