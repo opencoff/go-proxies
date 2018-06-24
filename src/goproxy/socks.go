@@ -15,6 +15,7 @@ import (
 	"net"
 	"sync"
 	"time"
+	"context"
 	//"encoding/hex"
 
 	L "github.com/opencoff/go-logger"
@@ -32,15 +33,19 @@ type Methods struct {
 type socksProxy struct {
 	*net.TCPListener
 
+	cfg  *ListenConf // config block
+
 	bind net.Addr    // address to bind to when connect to remote
 	log  *L.Logger   // Shortcut to logger
 	ulog *L.Logger   // URL Logger
-	cfg  *ListenConf // config block
 
-	stop chan bool
-	wg   sync.WaitGroup
 	grl  *ratelimit.Ratelimiter
 	prl  *ratelimit.PerIPRatelimiter
+
+	ctx  context.Context
+	cancel context.CancelFunc
+
+	wg   sync.WaitGroup
 }
 
 // Make a new proxy server
@@ -68,13 +73,21 @@ func NewSocksv5Proxy(cfg *ListenConf, log, ulog *L.Logger) (px *socksProxy, err 
 
 	log = log.New("socks-"+ln.Addr().String(), 0)
 
-	px = &socksProxy{bind: addr, log: log, ulog: ulog, cfg: cfg}
+	grl, _ := ratelimit.New(cfg.Ratelimit.Global, 1)
+	prl, _ := ratelimit.NewPerIPRatelimiter(cfg.Ratelimit.PerHost, 1)
 
-	px.TCPListener = ln
-	px.stop = make(chan bool)
-
-	px.grl, _ = ratelimit.New(cfg.Ratelimit.Global, 1)
-	px.prl, _ = ratelimit.NewPerIPRatelimiter(cfg.Ratelimit.PerHost, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	px = &socksProxy{
+		TCPListener:  ln,
+		cfg:          cfg,
+		bind:         addr,
+		log:          log,
+		ulog:         ulog,
+		grl:          grl,
+		prl:          prl,
+		ctx:          ctx,
+		cancel:       cancel,
+	}
 
 	return
 }
@@ -89,10 +102,13 @@ func (px *socksProxy) Start() {
 }
 
 func (px *socksProxy) Stop() {
-	close(px.stop)
+	px.cancel()
+	px.TCPListener.Close()
 	px.wg.Wait()
+
 	px.log.Info("SOCKS proxy shutdown")
 }
+
 
 // start the proxy
 // Caller is expected to kick this off as a go-routine
@@ -106,12 +122,8 @@ func (px *socksProxy) accept() {
 		ln.SetDeadline(time.Now().Add(2 * time.Second))
 		conn, err := ln.Accept()
 		select {
-		case _ = <-px.stop:
-			if err == nil {
-				conn.Close()
-			}
+		case <-px.ctx.Done():
 			return
-
 		default:
 		}
 
@@ -159,12 +171,15 @@ func (px *socksProxy) accept() {
 		log.Debug("Accepted connection from %s", rem)
 
 		// Fork off a handler for this new connection
+		px.wg.Add(1)
 		go px.Proxy(conn)
 	}
 }
 
 // goroutine to handle a proxy request from 'lhs'
 func (px *socksProxy) Proxy(lhs net.Conn) {
+
+	defer px.wg.Done()
 
 	// We expect to get some bytes within 10 seconds.
 	//lhs.SetReadDeadline(deadLine(10000))
@@ -203,13 +218,15 @@ func (px *socksProxy) Proxy(lhs net.Conn) {
 	lx := lhs.(*net.TCPConn)
 	rx := rhs.(*net.TCPConn)
 
-	var w sync.WaitGroup
+	cp := &CancellableCopier{
+		Lhs:          lx,
+		Rhs:          rx,
+		ReadTimeout:  10,	// XXX Config file
+		WriteTimeout: 15,	// XXX Config file
+		IOBufsize:    16384,
+	}
 
-	w.Add(2)
-	go px.iocopy(lx, rx, &w)
-	go px.iocopy(rx, lx, &w)
-
-	w.Wait()
+	cp.Copy(px.ctx)
 
 	if px.ulog != nil {
 		now := time.Now().UTC()
