@@ -9,11 +9,19 @@ Building the servers
 You need a reasonably new Golang toolchain (1.8+). And the ``go``
 executable needs to be in your path. Then run::
 
+    make
+
+
+The Makefile is exceedingly simple; it invokes two commands::
+
+    ./dep.sh sync
     ./build
 
-The script will build ``goproxy`` and places it in TARGET specific
-directory. e.g., for linux-amd64, the binaries will be in ``./bin/linux-amd64``;
-and OS X, it will be in ``./bin/darwin-amd64`` and so on.
+
+``build`` is the primary script responsible for building ``goproxy``.
+It places the binary in TARGET specific directory. e.g., for linux-amd64,
+the binaries will be in ``./bin/linux-amd64``; and OS X, it will be in
+``./bin/darwin-amd64`` and so on.
 
 You can cross-compile by passing appropriate architecture names to
 the script. e.g., to build on host OS X for openbsd-amd64::
@@ -58,11 +66,16 @@ separate section for SOCKSv5 proxy. An example is below::
     #log: /tmp/goproxy.log
     log: STDOUT
 
-    # Lodep.shing level - "DEBUG", "INFO", "WARN", "ERROR"
+    # Logging level - "DEBUG", "INFO", "WARN", "ERROR"
     loglevel: DEBUG
 
     # Path to URL Log and response codes
     #urllog:
+
+    # drop privileges as soon as listeners are setup to the uid/gid below.
+    # Only meaningful if go-proxy is started as root.
+    uid: nobody
+    gid: nobody
 
     # Listeners
     http:
@@ -77,8 +90,10 @@ separate section for SOCKSv5 proxy. An example is below::
             allow: [127.0.0.1/8, 11.0.1.0/24, 11.0.2.0/24]
             deny: []
 
-            # limit to N reqs/sec globally
-            ratelimit: 2000
+            # limit to N reqs/sec globally and M requests per-host
+            ratelimit:
+                global: 2000
+                perhost: 30
 
 
     socks:
@@ -88,7 +103,9 @@ separate section for SOCKSv5 proxy. An example is below::
             allow: [127.0.0.1/8, 11.0.1.0/24, 11.0.2.0/24]
             deny: []
             # limit to N reqs/sec globally
-            ratelimit: 2000
+            ratelimit:
+                global: 2000
+                perhost: 30
 
 
 
@@ -97,7 +114,7 @@ Major features
 - No authentication (yes, its a feature)
 - flexible allow/deny rules for discriminating clients
 - multiple listeners - each with their own ACL
-- Rate limiting incoming connections (global only for now)
+- Rate limiting incoming connections (global and per-host)
 
 Access Control Rules
 --------------------
