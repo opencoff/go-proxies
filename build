@@ -220,9 +220,6 @@ else
     fi
 fi
 
-# Sane GOPATH
-export GOPATH=$PWD/vendor:$PWD
-
 # This is where build outputs go
 Bindir=$PWD/bin/$cross
 Hostbindir=$PWD/bin/$hostos-$hostcpu
@@ -290,6 +287,8 @@ echo "Building $rev, $cross $msg .."
 
 for p in $all; do 
     echo "   $p .."
-    $e eval go build -o $Bindir/$p $isuffix "$ldflags" $p || exit 1
+    (cd src
+    $e eval go build -o $Bindir/$p $isuffix "$ldflags"
+    ) || exit 1
 done
 # .. vim: ft=sh:expandtab:ts=4:sw=4:tw=84:

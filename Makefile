@@ -8,8 +8,10 @@ static: depend
 	./build -s
 
 
-.PHONY: depend
+.PHONY: depend clean realclean
 
 depend:
-	./dep.sh sync
+
+clean realclean:
+	-rm -rf bin
 

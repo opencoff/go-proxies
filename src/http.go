@@ -29,8 +29,8 @@ type HTTPProxy struct {
 	// listen address
 	conf *ListenConf
 
-	grl *ratelimit.Ratelimiter
-	prl *ratelimit.PerIPRatelimiter
+	grl *ratelimit.RateLimiter
+	prl *ratelimit.PerIPRateLimiter
 
 	log  *L.Logger
 	ulog *L.Logger
@@ -61,7 +61,7 @@ func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 
 	// Conf file specifies ratelimit as N conns/sec
 	grl, _ := ratelimit.New(lc.Ratelimit.Global, 1)
-	prl, _ := ratelimit.NewPerIPRatelimiter(lc.Ratelimit.PerHost, 1)
+	prl, _ := ratelimit.NewPerIP(lc.Ratelimit.PerHost, 1, 30000)
 
 	ctx, cancel := context.WithCancel(context.Background())
 

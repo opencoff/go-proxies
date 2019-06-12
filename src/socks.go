@@ -39,8 +39,8 @@ type socksProxy struct {
 	log  *L.Logger   // Shortcut to logger
 	ulog *L.Logger   // URL Logger
 
-	grl  *ratelimit.Ratelimiter
-	prl  *ratelimit.PerIPRatelimiter
+	grl  *ratelimit.RateLimiter
+	prl  *ratelimit.PerIPRateLimiter
 
 	ctx  context.Context
 	cancel context.CancelFunc
@@ -74,7 +74,7 @@ func NewSocksv5Proxy(cfg *ListenConf, log, ulog *L.Logger) (px *socksProxy, err 
 	log = log.New("socks-"+ln.Addr().String(), 0)
 
 	grl, _ := ratelimit.New(cfg.Ratelimit.Global, 1)
-	prl, _ := ratelimit.NewPerIPRatelimiter(cfg.Ratelimit.PerHost, 1)
+	prl, _ := ratelimit.NewPerIP(cfg.Ratelimit.PerHost, 1, 30000)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	px = &socksProxy{
