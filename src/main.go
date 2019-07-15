@@ -19,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	flag "github.com/ogier/pflag"
+	flag "github.com/opencoff/pflag"
 	yaml "gopkg.in/yaml.v2"
 
 	L "github.com/opencoff/go-logger"
