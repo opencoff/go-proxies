@@ -13,11 +13,11 @@
 #
 # License: GPLv2
 #
-Progs="goproxy"
+Progs="src:goproxy"
 
 # Relative path to protobuf sources
 # e.g. src/foo/a.proto
-Protobufs=
+Protobufs=""
 
 
 # -- DO NOT CHANGE ANYTHING AFTER THIS --
@@ -28,14 +28,20 @@ PWD=`pwd`
 Static=0
 Dryrun=0
 Prodver=0.1
+Verbose=0
 
 hostos=$(go env GOHOSTOS)       || exit 1
 hostcpu=$(go env GOHOSTARCH)    || exit 1
 
+[ -f ./version ] && Prodver=$(cat ./version)
 
 die() {
     echo "$Z: $@" 1>&2
     exit 0
+}
+
+warn() {
+    echo "$Z: $@" 1>&2
 }
 
 case $BASH_VERSION in
@@ -45,9 +51,37 @@ case $BASH_VERSION in
         ;;
 esac
 
-warn() {
-    echo "$Z: $@" 1>&2
+
+# build a tool that runs on the host - if needed.
+hosttool() {
+    local tool=$1
+    local bindir=$2
+    local src=$3
+
+    local p=$(type -P $tool)
+    if [ -n "$p" ]; then
+        echo $p
+        return 0
+    fi
+
+    # from here - we want this dir to find all build artifacts
+    PATH=$PATH:$bindir
+    export PATH
+
+    p=$bindir/$tool
+    if [ -x $p ]; then
+        echo $p
+        return 0
+    fi
+
+    # build it and stash it in the hostdir
+    echo "Building tool $tool from $src .."
+    $e go get -d      $src || exit 1
+    $e go build -o $p $src || exit 1
+    echo $p
+    return 0
 }
+
 
 usage() {
 
@@ -56,24 +90,29 @@ $0 - A Go production build tool that adds git-repository information,
 product version, build-timestamp etc. It supports cross-compilation,
 static linking and generating protobuf output.
 
-It uses the gogo-slick protobuf compiler [github.com/gogo/protobuf].
+If needed, it uses the gogo-slick protobuf compiler [github.com/gogo/protobuf].
 
 Build output is in bin/\$OS-\$CPU for a given OS, CPU combination.
 
 Usage: $0
        $0 [options] [PROGS]
 
-Where OS-ARCH denotes one of the valid OS, ARCH combinations supported by 'gg'.
+Where OS-ARCH denotes one of the valid OS, ARCH combinations supported by 'go'.
 And, PROGS is one or more go programs.
 
-With no arguments, $0 builds: $Progs
+With no arguments, $0 builds: $Progs (source in ./src/)
+
+If ./version is present, its content are used as version number for the binary.
 
 Options:
     -h, --help          Show this help message and quit
-    -, --static         Build a statically linked binary [False]
+    -s, --static        Build a statically linked binary [False]
     -V N, --version=N   Use 'N' as the product version string [$Prodver]
     -a X, --arch=X      Cross compile for OS-CPU 'X' [$hostos-$hostcpu]
     -n, --dry-run       Dry-run, don't actually build anything [False]
+    -t, --test          Run "go test" on modules named on the command line [False]
+    -v, --verbose       Build verbosely (adds "-v" to go tooling) [False]
+    --vet               Run "go vet" on modules named on the command line [False]
     -x                  Run in debug/trace mode [False]
 EOF
 
@@ -111,6 +150,7 @@ for c in $cpulist; do
 done
 
 
+Tool=
 doinit=0
 args=
 
@@ -147,8 +187,19 @@ do
         --version=*)
             Prodver=$ac_optarg
             ;;
+        --test|-t)
+            Tool=test
+            ;;
+
+        --vet)
+            Tool=vet
+            ;;
+
         -V|--version)
             ac_prev=Prodver
+            ;;
+        -v|--verbose)
+            Verbose=1
             ;;
 
         -s|--static)
@@ -175,6 +226,9 @@ do
   esac
 done
 [ $Dryrun  -gt 0 ] && e=echo
+
+# let every error abort
+set -e
 
 # This fragment can't be in a function - since it exports several vars
 if [ -n "$Arch" ]; then
@@ -227,10 +281,9 @@ Hostbindir=$PWD/bin/$hostos-$hostcpu
 [ -d $Bindir ]     || mkdir -p $Bindir
 [ -d $Hostbindir ] || mkdir -p $Hostbindir
 
-
 # Get git/hg version info for the build
 if [ -d "./.hg" ]; then
-    xrev=$(hg id --id)
+    xrev=$(hg id --id) || exit 1
     brev=${xrev%+}
     if [ "$brev" != "$xrev" ]; then
         rev="hg:${brev}-dirty"
@@ -238,7 +291,7 @@ if [ -d "./.hg" ]; then
         rev="hg:${brev}"
     fi
 elif [ -d "./.git" ]; then
-    xrev=$(git describe --always --dirty --long --abbrev=12)
+    xrev=$(git describe --always --dirty --long --abbrev=12) || exit 1
     rev="git:$xrev"
 else
     rev="UNKNOWN-VER"
@@ -248,14 +301,16 @@ fi
 # Do Protobufs if needed
 if [ -n "$Protobufs" ]; then
     slick=$Hostbindir/protoc-gen-gogoslick
+    slicksrc=github.com/gogo/protobuf/protoc-gen-gogoslick
     pc=$(type -p protoc)
 
     [ -z "$pc" ] && die "Need 'protoc' for building .."
 
-    if [ ! -f $slick ]; then
-        echo "Building $slick .."
-        $e go build -o $slick github.com/gogo/protobuf/protoc-gen-gogoslick || exit 1
-    fi
+    slick=$(hosttool protoc-gen-gogoslick $Hostbindir $slicksrc) || exit 1
+    #if [ ! -f $slick ]; then
+    #   echo "Building $slick .."
+    #   $e go build -o $slick github.com/gogo/protobuf/protoc-gen-gogoslick || exit 1
+    #i
 
     export PATH=$PATH:$Hostbindir
 
@@ -274,21 +329,43 @@ repover="main.RepoVersion=$rev"
 prodver="main.ProductVersion=$Prodver"
 date="main.Buildtime=`date -u '+%Y-%m-%dT%H:%M.%SZ'`"
 ldflags="-ldflags \"-X $repover -X $prodver -X $date $ldflags\""
+vflag=""
 
+[ $Verbose -gt 0 ] && vflag="-v"
 
-set -- $args
-if [ -z "$1" ]; then
-    all=$Progs
-else
-    all="$@"
-fi
+case $Tool in
+    test)
+        set -- $args
+        $e go test $vflag "$@"
+        ;;
 
-echo "Building $rev, $cross $msg .."
+    vet)
+        set -- $args
+        $e go vet $vflag "$@"
+        ;;
 
-for p in $all; do 
-    echo "   $p .."
-    (cd src
-    $e eval go build -o $Bindir/$p $isuffix "$ldflags"
-    ) || exit 1
-done
-# .. vim: ft=sh:expandtab:ts=4:sw=4:tw=84:
+    *) # Default is to build programs
+        set -- $args
+        if [ -z "$1" ]; then
+            all=$Progs
+        else
+            all="$@"
+        fi
+
+        echo "Building $rev, $cross $msg .."
+
+        for p in $all; do 
+            if echo $p | grep -q ':' ; then
+                out=${p##*:}
+                dir=${p%%:*}
+            else
+                out=$p
+                dir=$p
+            fi
+            echo "   $dir: $out .. "
+            $e eval go build $vflag -o $Bindir/$out $isuffix "$ldflags" ./$dir || exit 1
+        done
+        ;;
+esac
+
+# vim: ft=sh:expandtab:ts=4:sw=4:tw=84:
