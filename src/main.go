@@ -94,13 +94,13 @@ func (ipn *subnet) UnmarshalYAML(unm func(v interface{}) error) error {
 func ReadYAML(fn string) (*Conf, error) {
 	yml, err := ioutil.ReadFile(fn)
 	if err != nil {
-		return nil, fmt.Errorf("Can't read config file %s: %s", fn, err)
+		return nil, fmt.Errorf("can't read config file %s: %s", fn, err)
 	}
 
 	var cfg Conf
 	err = yaml.Unmarshal(yml, &cfg)
 	if err != nil {
-		return nil, fmt.Errorf("Can't parse config file %s: %s", fn, err)
+		return nil, fmt.Errorf("can't parse config file %s: %s", fn, err)
 	}
 
 	return &cfg, nil
@@ -216,8 +216,7 @@ func main() {
 	// Setup signal handlers
 	sigchan := make(chan os.Signal, 4)
 	signal.Notify(sigchan,
-		syscall.SIGTERM, syscall.SIGKILL,
-		syscall.SIGINT, syscall.SIGHUP)
+		syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 
 	signal.Ignore(syscall.SIGPIPE, syscall.SIGFPE)
 

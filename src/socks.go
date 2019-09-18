@@ -243,21 +243,6 @@ func (px *socksProxy) Proxy(lhs net.Conn) {
 	}
 }
 
-// Copy from 's' to 'd'
-func (px *socksProxy) iocopy(d, s *net.TCPConn, w *sync.WaitGroup) int64 {
-	n, err := io.Copy(d, s)
-	if err != nil && err != io.EOF && !isReset(err) {
-		px.log.Debug("copy from %s to %s: %s",
-			s.RemoteAddr().String(), d.RemoteAddr().String(), err)
-	}
-
-	d.CloseWrite()
-	s.CloseRead()
-
-	w.Done()
-	return n
-}
-
 // Read the advertised methods from the client and respond
 func (px *socksProxy) readMethods(conn net.Conn) (m Methods, err error) {
 	rem := conn.RemoteAddr().String()
@@ -269,9 +254,10 @@ func (px *socksProxy) readMethods(conn net.Conn) (m Methods, err error) {
 	}
 
 	if n < 2 {
-		px.log.Error("%s Insufficient data while reading version: Saw only %d bytes\n",
+		errs := fmt.Sprintf("%s Insufficient data while reading version: Saw only %d bytes\n",
 			rem, n)
-		err = errors.New("Insufficient data")
+		px.log.Error(errs)
+		err = errors.New(errs)
 		return
 	}
 
@@ -279,7 +265,7 @@ func (px *socksProxy) readMethods(conn net.Conn) (m Methods, err error) {
 	m.nmethods = b[1]
 
 	if n-2 < int(m.nmethods) {
-		errs := fmt.Sprintf("%s: insufficient data while reading methods; exp %d bytes, saw %d",
+		errs := fmt.Sprintf("%s insufficient data while reading methods; exp %d bytes, saw %d",
 			rem, m.nmethods, n-2)
 		px.log.Error(errs)
 		err = fmt.Errorf(errs)
@@ -330,9 +316,10 @@ func (px *socksProxy) doConnect(lhs net.Conn) (rhs net.Conn, s string, err error
 	//
 
 	if n < 7 {
-		log.Error("%s Insufficient data while reading connect: Saw %d, want 7\n",
+		errs := fmt.Sprintf("%s Insufficient data while reading connect: Saw %d, want 7\n",
 			ls, n)
-		err = errors.New("Insufficient data")
+		log.Error(errs)
+		err = errors.New(errs)
 		return
 	}
 
@@ -342,9 +329,10 @@ func (px *socksProxy) doConnect(lhs net.Conn) (rhs net.Conn, s string, err error
 	switch buf[3] {
 	case 0x1:
 		if n-4 < 4 {
-			log.Error("%s Insufficient data for IPv4 addr: saw %d, want 4\n",
+			errs := fmt.Sprintf("%s Insufficient data for IPv4 addr: saw %d, want 4\n",
 				ls, n-4)
-			err = errors.New("Insufficient data")
+			log.Error(errs)
+			err = errors.New(errs)
 			return
 		}
 		s += fmt.Sprintf("%d", buf[4])
@@ -355,9 +343,10 @@ func (px *socksProxy) doConnect(lhs net.Conn) (rhs net.Conn, s string, err error
 	case 0x3:
 		m := int(buf[4])
 		if n-4 < m {
-			log.Error("%s Insufficient data for domain: saw %d, want %d\n",
+			errs := fmt.Sprintf("%s Insufficient data for domain: saw %d, want %d\n",
 				ls, n-4, m)
-			err = errors.New("Insufficient data")
+			log.Error(errs)
+			err = errors.New(errs)
 			return
 		}
 
@@ -368,9 +357,10 @@ func (px *socksProxy) doConnect(lhs net.Conn) (rhs net.Conn, s string, err error
 	case 0x4:
 		m := 16
 		if n-4 < m {
-			log.Error("%s Insufficient data for IPv6 addr: saw %d, want 16\n",
+			errs := fmt.Sprintf("%s Insufficient data for IPv6 addr: saw %d, want 16\n",
 				ls, n-4)
-			err = errors.New("Insufficient data")
+			log.Error(errs)
+			err = errors.New(errs)
 			return
 		}
 		s = fmt.Sprintf("[%02x", buf[5])

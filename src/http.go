@@ -43,8 +43,6 @@ type HTTPProxy struct {
 	srv *http.Server
 
 	wg sync.WaitGroup
-
-	flush int
 }
 
 func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
@@ -235,54 +233,13 @@ func extractHost(u *url.URL) string {
 	return h
 }
 
-var delHeaders = []string{
-	"Accept-Encoding",
-	"Proxy-Connection",
-	"Proxy-Authenticate",
-	"Proxy-Authorization",
-	"Connection",
-}
-
-// Scrub the request and remove proxy headers
-// XXX Do we add our own Via: or
-func scrubReq(r *http.Request) {
-	for _, k := range delHeaders {
-		r.Header.Del(k)
-	}
-
-	if clientIP, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		// If we aren't the first proxy retain prior
-		// X-Forwarded-For information as a comma+space
-		// separated list and fold multiple headers into one.
-		if prior, ok := r.Header["X-Forwarded-For"]; ok {
-			clientIP = strings.Join(prior, ", ") + ", " + clientIP
-		}
-		r.Header.Set("X-Forwarded-For", clientIP)
-	}
-}
-
-// First delete the old headers and add the new ones
-func copyRespHeaders(d, s http.Header) {
-	// XXX Do we delete all _existing_ headers or only the ones that
-	// are in 's' ?
-	for k := range s {
-		d.Del(k)
-	}
-
-	for k, va := range s {
-		for _, v := range va {
-			d.Add(k, v)
-		}
-	}
-}
-
 // handle HTTP CONNECT
 func (p *HTTPProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	h, ok := w.(http.Hijacker)
 	if !ok {
 		p.log.Warn("can't do CONNECT: hijack failed")
-		http.Error(w, "Can't support CONNECT", 501)
+		http.Error(w, "Can't support CONNECT", http.StatusNotImplemented)
 		return
 	}
 
@@ -290,7 +247,7 @@ func (p *HTTPProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Likely HTTP/2.x -- its OK
 		p.log.Warn("can't do CONNECT: hijack failed: %s", err)
-		http.Error(w, "Can't support CONNECT", 501)
+		http.Error(w, "Can't support CONNECT", http.StatusNotImplemented)
 		client.Close()
 		return
 	}
@@ -303,7 +260,7 @@ func (p *HTTPProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	dest, err := p.tr.DialContext(ctx, "tcp", host)
 	if err != nil {
 		p.log.Debug("can't connect to %s: %s", host, err)
-		http.Error(w, fmt.Sprintf("can't connect to %s", host), 500)
+		http.Error(w, fmt.Sprintf("can't connect to %s", host), http.StatusInternalServerError)
 		client.Close()
 		return
 	}
