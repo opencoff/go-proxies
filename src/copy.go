@@ -10,21 +10,20 @@ package main
 
 import (
 	"context"
-	"net"
 	"io"
+	"net"
 	"sync"
 	"time"
 )
-
 
 type CancellableCopier struct {
 	Lhs *net.TCPConn
 	Rhs *net.TCPConn
 
-	ReadTimeout int
+	ReadTimeout  int
 	WriteTimeout int
 
-	IOBufsize  int
+	IOBufsize int
 }
 
 // CancellableCopy does bi-directional I/O between two connections d & s. It is cancellable
@@ -38,7 +37,7 @@ func (c *CancellableCopier) Copy(ctx context.Context) (nLhs, nRhs int, err error
 	}
 
 	if c.ReadTimeout <= 0 {
-		c.ReadTimeout = 10  // seconds
+		c.ReadTimeout = 10 // seconds
 	}
 
 	if c.WriteTimeout <= 0 {
@@ -74,7 +73,6 @@ func (c *CancellableCopier) Copy(ctx context.Context) (nLhs, nRhs int, err error
 		_, nRhs, _ = c.copyBuf(c.Rhs, c.Lhs, b1)
 	}()
 
-
 	// Wait for parent to kill us or the copy routines to end.
 	// If parent kills us, we wait for copy-routines to end as well.
 	select {
@@ -82,18 +80,15 @@ func (c *CancellableCopier) Copy(ctx context.Context) (nLhs, nRhs int, err error
 		// close the sockets and force the i/o loop in copybuf to end.
 		c.Lhs.Close()
 		c.Rhs.Close()
-		<- ch
+		<-ch
 
 	case <-ch:
 	}
-
 
 	// XXX Gah which error do I report?
 	err = nil
 	return
 }
-
-
 
 func (c *CancellableCopier) copyBuf(d, s *net.TCPConn, b []byte) (nr, nw int, err error) {
 	rto := time.Duration(c.ReadTimeout) * time.Second

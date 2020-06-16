@@ -62,8 +62,8 @@ type ListenConf struct {
 }
 
 type RateLimit struct {
-	Global  uint `yaml:"global"`
-	PerHost uint `yaml:"perhost"`
+	Global  int `yaml:"global"`
+	PerHost int `yaml:"perhost"`
 }
 
 // An IP/Subnet

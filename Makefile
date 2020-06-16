@@ -1,10 +1,6 @@
 # Simple makefile to build this go program
 
-all: depend
-	./build
-
-
-static: depend
+all static: depend
 	./build -s
 
 

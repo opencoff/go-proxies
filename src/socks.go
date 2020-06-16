@@ -9,13 +9,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"sync"
 	"time"
-	"context"
 	//"encoding/hex"
 
 	L "github.com/opencoff/go-logger"
@@ -33,19 +33,18 @@ type Methods struct {
 type socksProxy struct {
 	*net.TCPListener
 
-	cfg  *ListenConf // config block
+	cfg *ListenConf // config block
 
-	bind net.Addr    // address to bind to when connect to remote
-	log  *L.Logger   // Shortcut to logger
-	ulog *L.Logger   // URL Logger
+	bind net.Addr  // address to bind to when connect to remote
+	log  *L.Logger // Shortcut to logger
+	ulog *L.Logger // URL Logger
 
-	grl  *ratelimit.RateLimiter
-	prl  *ratelimit.PerIPRateLimiter
+	rl *ratelimit.RateLimiter
 
-	ctx  context.Context
+	ctx    context.Context
 	cancel context.CancelFunc
 
-	wg   sync.WaitGroup
+	wg sync.WaitGroup
 }
 
 // Make a new proxy server
@@ -73,20 +72,21 @@ func NewSocksv5Proxy(cfg *ListenConf, log, ulog *L.Logger) (px *socksProxy, err 
 
 	log = log.New("socks-"+ln.Addr().String(), 0)
 
-	grl, _ := ratelimit.New(cfg.Ratelimit.Global, 1)
-	prl, _ := ratelimit.NewPerIP(cfg.Ratelimit.PerHost, 1, 30000)
+	rl, err := ratelimit.New(cfg.Ratelimit.Global, cfg.Ratelimit.PerHost, 10000)
+	if err != nil {
+		die("%s: can't setup rate limiter: %s", addr, err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	px = &socksProxy{
-		TCPListener:  ln,
-		cfg:          cfg,
-		bind:         addr,
-		log:          log,
-		ulog:         ulog,
-		grl:          grl,
-		prl:          prl,
-		ctx:          ctx,
-		cancel:       cancel,
+		TCPListener: ln,
+		cfg:         cfg,
+		bind:        addr,
+		log:         log,
+		ulog:        ulog,
+		rl:          rl,
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 
 	return
@@ -108,7 +108,6 @@ func (px *socksProxy) Stop() {
 
 	px.log.Info("SOCKS proxy shutdown")
 }
-
 
 // start the proxy
 // Caller is expected to kick this off as a go-routine
@@ -146,13 +145,13 @@ func (px *socksProxy) accept() {
 		rem := conn.RemoteAddr().String()
 
 		// Ratelimit before anything else we do
-		if px.grl.Limit() {
+		if !px.rl.Allow() {
 			conn.Close()
 			log.Debug("global ratelimit reached: %s", rem)
 			continue
 		}
 
-		if px.prl.Limit(conn.RemoteAddr()) {
+		if !px.rl.AllowHost(conn.RemoteAddr()) {
 			conn.Close()
 			log.Debug("per-host ratelimit reached: %s", rem)
 			continue
@@ -221,8 +220,8 @@ func (px *socksProxy) Proxy(lhs net.Conn) {
 	cp := &CancellableCopier{
 		Lhs:          lx,
 		Rhs:          rx,
-		ReadTimeout:  10,	// XXX Config file
-		WriteTimeout: 15,	// XXX Config file
+		ReadTimeout:  10, // XXX Config file
+		WriteTimeout: 15, // XXX Config file
 		IOBufsize:    16384,
 	}
 

@@ -29,8 +29,7 @@ type HTTPProxy struct {
 	// listen address
 	conf *ListenConf
 
-	grl *ratelimit.RateLimiter
-	prl *ratelimit.PerIPRateLimiter
+	rl *ratelimit.RateLimiter
 
 	log  *L.Logger
 	ulog *L.Logger
@@ -58,8 +57,10 @@ func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 	}
 
 	// Conf file specifies ratelimit as N conns/sec
-	grl, _ := ratelimit.New(lc.Ratelimit.Global, 1)
-	prl, _ := ratelimit.NewPerIP(lc.Ratelimit.PerHost, 1, 30000)
+	rl, err := ratelimit.New(lc.Ratelimit.Global, lc.Ratelimit.PerHost, 10000)
+	if err != nil {
+		die("%s: can't setup rate limiter: %s", addr, err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -73,8 +74,7 @@ func NewHTTPProxy(lc *ListenConf, log, ulog *L.Logger) (Proxy, error) {
 		conf:        lc,
 		log:         log.New("http-"+ln.Addr().String(), 0),
 		ulog:        ulog,
-		grl:         grl,
-		prl:         prl,
+		rl:          rl,
 		ctx:         ctx,
 		cancel:      cancel,
 
@@ -254,7 +254,6 @@ func (p *HTTPProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	host := extractHost(r.URL)
 
-
 	ctx := r.Context()
 
 	dest, err := p.tr.DialContext(ctx, "tcp", host)
@@ -272,18 +271,16 @@ func (p *HTTPProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	p.log.Debug("%s: CONNECT %s", s.RemoteAddr().String(), host)
 
-
 	cp := &CancellableCopier{
 		Lhs:          s,
 		Rhs:          d,
-		ReadTimeout:  10,	// XXX Config file
-		WriteTimeout: 15,	// XXX Config file
+		ReadTimeout:  10, // XXX Config file
+		WriteTimeout: 15, // XXX Config file
 		IOBufsize:    16384,
 	}
 
 	cp.Copy(ctx)
 }
-
 
 // Accept() new socket connections from the listener
 // Note:
@@ -311,13 +308,13 @@ func (p *HTTPProxy) Accept() (net.Conn, error) {
 			return nil, err
 		}
 
-		if p.grl.Limit() {
+		if !p.rl.Allow() {
 			nc.Close()
 			p.log.Debug("%s: globally ratelimited", nc.RemoteAddr().String())
 			continue
 		}
 
-		if p.prl.Limit(nc.RemoteAddr()) {
+		if !p.rl.AllowHost(nc.RemoteAddr()) {
 			nc.Close()
 			p.log.Debug("%s: per-IP ratelimited", nc.RemoteAddr().String())
 			continue
